@@ -1,0 +1,170 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {uid}
+    // Fields:
+    //   - uid: string (required) - ID người dùng
+    //   - email: string (required) - Email người dùng
+    //   - displayName: string (optional) - Tên hiển thị
+    //   - role: string (required, enum: ['admin', 'teacher', 'student', 'guest']) - Vai trò
+    //   - createdAt: timestamp (required) - Ngày tạo
+    //
+    // Collection: quizzes
+    // Document ID: {quizId}
+    // Fields:
+    //   - title: string (required, max 200) - Tiêu đề
+    //   - description: string (optional, max 1000) - Mô tả
+    //   - duration: number (required, positive) - Thời gian làm bài (phút)
+    //   - maxAttempts: number (optional, >= 0) - Số lượt thi tối đa
+    //   - createdBy: string (required) - UID admin
+    //   - createdAt: timestamp (required) - Ngày tạo
+    //   - isActive: bool (required) - Trạng thái
+    //
+    // Collection: quizzes/{quizId}/questions
+    // Document ID: {questionId}
+    // Fields:
+    //   - text: string (required, max 2000) - Nội dung câu hỏi
+    //   - options: list (required, size 2-10) - Các lựa chọn
+    //   - correctOptionIndex: number (required, 0-9) - Đáp án đúng
+    //   - explanation: string (optional, max 2000) - Giải thích
+    //
+    // Collection: results
+    // Document ID: {resultId}
+    // Fields:
+    //   - quizId: string (required) - ID bài thi
+    //   - studentUid: string (required) - UID học sinh
+    //   - studentName: string (required) - Tên học sinh
+    //   - score: number (required) - Điểm số
+    //   - totalQuestions: number (required) - Tổng số câu
+    //   - correctAnswers: number (required) - Số câu đúng
+    //   - completedAt: timestamp (required) - Thời gian nộp
+    //   - answers: list (required) - Các đáp án đã chọn
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isApproved() {
+      return isAuthenticated() && 
+        ((request.auth.token.email == "nguyenphuongaistudent@gmail.com" && request.auth.token.email_verified == true) ||
+         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isApproved == true));
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && 
+        ((request.auth.token.email == "nguyenphuongaistudent@gmail.com" && request.auth.token.email_verified == true) ||
+         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'));
+    }
+
+    function isTeacher() {
+      return isApproved() && 
+        (isAdmin() || (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'teacher'));
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return hasOnlyAllowedFields(['uid', 'email', 'displayName', 'role', 'createdAt', 'isApproved']) &&
+             data.uid is string && data.uid.size() > 0 &&
+             data.email is string && data.email.size() > 0 &&
+             data.role in ['admin', 'teacher', 'student', 'guest'] &&
+             data.isApproved is bool;
+    }
+
+    function isValidQuiz(data) {
+      return hasOnlyAllowedFields(['title', 'description', 'subject', 'topic', 'duration', 'maxAttempts', 'createdBy', 'createdAt', 'isActive', 'updatedAt']) &&
+             (!('title' in data) || (data.title is string && data.title.size() > 0 && data.title.size() <= 200)) &&
+             (!('subject' in data) || (data.subject is string && data.subject.size() > 0)) &&
+             (!('topic' in data) || (data.topic in ['regular', 'periodic', 'graduation'])) &&
+             (!('duration' in data) || (data.duration is number && data.duration > 0)) &&
+             (!('maxAttempts' in data) || (data.maxAttempts is number && data.maxAttempts >= 0)) &&
+             (!('createdBy' in data) || (data.createdBy is string)) &&
+             (!('isActive' in data) || (data.isActive is bool));
+    }
+
+    function isValidQuestion(data) {
+      return hasOnlyAllowedFields(['type', 'text', 'options', 'correctOptionIndex', 'correctAnswers', 'explanation', 'order']) &&
+             data.type in ['multiple_choice', 'true_false'] &&
+             data.text is string && data.text.size() > 0 && data.text.size() <= 500000 &&
+             data.options is list && data.options.size() >= 2 && data.options.size() <= 10 &&
+             (data.type == 'multiple_choice' ? 
+               (data.correctOptionIndex is number && data.correctOptionIndex >= 0 && data.correctOptionIndex < data.options.size()) : 
+               (data.correctAnswers is list && data.correctAnswers.size() == 4)) &&
+             (data.explanation is string && data.explanation.size() <= 500000) &&
+             (data.order is number);
+    }
+
+    function isValidResult(data) {
+      return hasOnlyAllowedFields(['quizId', 'quizTitle', 'subject', 'topic', 'studentUid', 'studentName', 'score', 'totalQuestions', 'correctAnswers', 'completedAt', 'answers']) &&
+             (!('quizId' in data) || data.quizId is string) &&
+             (!('subject' in data) || data.subject is string) &&
+             (!('topic' in data) || data.topic in ['regular', 'periodic', 'graduation']) &&
+             (!('studentUid' in data) || data.studentUid is string) &&
+             (!('studentName' in data) || data.studentName is string) &&
+             (!('score' in data) || data.score is number) &&
+             (!('totalQuestions' in data) || data.totalQuestions is number) &&
+             (!('correctAnswers' in data) || data.correctAnswers is number) &&
+             (!('answers' in data) || data.answers is list);
+    }
+
+    // ===============================================================
+    // Match Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && (isAdmin() || (isOwner(userId) && isValidUser(request.resource.data) && (request.resource.data.role == 'student' || (request.resource.data.email == "nguyenphuongaistudent@gmail.com" && request.resource.data.role == 'admin'))));
+      allow update: if isAuthenticated() && 
+        (isAdmin() || 
+         isTeacher() && isValidUser(request.resource.data) && request.resource.data.role != 'admin' ||
+         (isOwner(userId) && isValidUser(request.resource.data) && 
+          (request.resource.data.role == resource.data.role || (request.resource.data.email == "nguyenphuongaistudent@gmail.com" && request.resource.data.role == 'admin'))
+         )
+        );
+      allow delete: if isAdmin();
+    }
+
+    match /quizzes/{quizId} {
+      allow read: if isApproved();
+      allow create: if isTeacher() && isValidQuiz(request.resource.data);
+      allow update: if isTeacher() && isValidQuiz(request.resource.data);
+      allow delete: if isTeacher();
+
+      match /questions/{questionId} {
+        allow read: if isApproved();
+        allow create: if isTeacher() && isValidQuestion(request.resource.data);
+        allow update: if isTeacher() && isValidQuestion(request.resource.data);
+        allow delete: if isTeacher();
+      }
+    }
+
+    match /results/{resultId} {
+      allow read: if isApproved();
+      allow create: if isApproved() && request.resource.data.studentUid == request.auth.uid && isValidResult(request.resource.data);
+    }
+  }
+}
