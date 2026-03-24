@@ -6,6 +6,7 @@ import * as XLSX from 'xlsx';
 import { Users, UserPlus, Trash2, Shield, GraduationCap, UserCircle, Loader2, Search, Mail, CheckCircle, XCircle, Clock, Edit2, School, BookOpen, Save, FileDown, FileUp, Key, Download, ChevronUp, ChevronDown, Filter } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { sendPasswordReset, signUpWithEmail, checkUsernameUnique, checkEmailUnique } from '../firebase';
+import ResetPasswordModal from '../components/ResetPasswordModal';
 
 interface UserManagementProps {
   currentUser: User;
@@ -23,6 +24,7 @@ export default function UserManagement({ currentUser }: UserManagementProps) {
   
   const [isAdding, setIsAdding] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [resettingUser, setResettingUser] = useState<User | null>(null);
   const [newEmail, setNewEmail] = useState('');
   const [newUsername, setNewUsername] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -258,29 +260,23 @@ export default function UserManagement({ currentUser }: UserManagementProps) {
       alert('Chỉ quản trị viên mới có quyền reset mật khẩu.');
       return;
     }
-    
-    // If password is stored in Firestore, show it
-    if (user.password) {
-      if (window.confirm(`Mật khẩu hiện tại của ${user.displayName} là: ${user.password}. Bạn có muốn gửi email khôi phục mật khẩu thay thế không?`)) {
-        try {
-          await sendPasswordReset(user.email);
-          alert('Đã gửi email khôi phục mật khẩu thành công.');
-        } catch (error) {
-          console.error('Error resetting password:', error);
-          alert('Có lỗi xảy ra khi gửi email khôi phục mật khẩu.');
-        }
+    setResettingUser(user);
+  };
+
+  const performReset = async (method: 'email' | 'direct') => {
+    if (!resettingUser) return;
+    try {
+      if (method === 'email') {
+        await sendPasswordReset(resettingUser.email);
+        alert('Đã gửi email khôi phục mật khẩu thành công.');
+      } else {
+        const newPassword = Math.random().toString(36).slice(-8);
+        await setDoc(doc(db, 'users', resettingUser.uid), { password: newPassword }, { merge: true });
+        alert(`Mật khẩu mới của ${resettingUser.displayName} là: ${newPassword}`);
       }
-    } else {
-      // Otherwise, only offer email reset
-      if (window.confirm(`Gửi email khôi phục mật khẩu đến ${user.email}?`)) {
-        try {
-          await sendPasswordReset(user.email);
-          alert('Đã gửi email khôi phục mật khẩu thành công.');
-        } catch (error) {
-          console.error('Error resetting password:', error);
-          alert('Có lỗi xảy ra khi gửi email khôi phục mật khẩu.');
-        }
-      }
+    } catch (error) {
+      console.error('Error resetting password:', error);
+      alert('Có lỗi xảy ra khi khôi phục mật khẩu.');
     }
   };
 
@@ -430,6 +426,10 @@ export default function UserManagement({ currentUser }: UserManagementProps) {
   const [currentPage, setCurrentPage] = useState(1);
   const pageSize = 50;
 
+  // Lấy danh sách trường và lớp duy nhất
+  const schools = Array.from(new Set(users.map(u => u.school).filter(Boolean) as string[])).sort();
+  const classes = Array.from(new Set(users.map(u => u.class).filter(Boolean) as string[])).sort();
+
   useEffect(() => {
     setCurrentPage(1);
   }, [searchTerm, filterSchool, filterClass]);
@@ -439,8 +439,8 @@ export default function UserManagement({ currentUser }: UserManagementProps) {
       const matchesSearch = u.email.toLowerCase().includes(searchTerm.toLowerCase()) || 
                            u.displayName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
                            u.username?.toLowerCase().includes(searchTerm.toLowerCase());
-      const matchesSchool = !filterSchool || u.school?.toLowerCase().includes(filterSchool.toLowerCase());
-      const matchesClass = !filterClass || u.class?.toLowerCase().includes(filterClass.toLowerCase());
+      const matchesSchool = !filterSchool || u.school === filterSchool;
+      const matchesClass = !filterClass || u.class === filterClass;
       return matchesSearch && matchesSchool && matchesClass;
     })
     .sort((a, b) => {
@@ -520,23 +520,25 @@ export default function UserManagement({ currentUser }: UserManagementProps) {
             <div className="flex flex-wrap items-center gap-3">
               <div className="flex items-center gap-2 bg-white border border-stone-200 rounded-lg px-3 py-1.5">
                 <School className="w-4 h-4 text-stone-400" />
-                <input
-                  type="text"
-                  placeholder="Lọc theo trường..."
+                <select
                   value={filterSchool}
                   onChange={(e) => setFilterSchool(e.target.value)}
                   className="bg-transparent border-none focus:ring-0 text-sm w-32"
-                />
+                >
+                  <option value="">Tất cả trường</option>
+                  {schools.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
               </div>
               <div className="flex items-center gap-2 bg-white border border-stone-200 rounded-lg px-3 py-1.5">
                 <BookOpen className="w-4 h-4 text-stone-400" />
-                <input
-                  type="text"
-                  placeholder="Lọc theo lớp..."
+                <select
                   value={filterClass}
                   onChange={(e) => setFilterClass(e.target.value)}
                   className="bg-transparent border-none focus:ring-0 text-sm w-32"
-                />
+                >
+                  <option value="">Tất cả lớp</option>
+                  {classes.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
               </div>
               
               <div className="flex items-center gap-2 text-xs font-medium text-stone-400 uppercase tracking-wider ml-auto lg:ml-0">

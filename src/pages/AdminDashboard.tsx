@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, memo } from 'react';
 import ReactQuill from 'react-quill-new';
 import * as XLSX from 'xlsx';
-import { collection, onSnapshot, query, orderBy, addDoc, serverTimestamp, updateDoc, doc, deleteDoc, getDocs, writeBatch, deleteField, where } from 'firebase/firestore';
+import { collection, onSnapshot, query, orderBy, addDoc, serverTimestamp, updateDoc, doc, deleteDoc, getDocs, writeBatch, deleteField, where, setDoc } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { Quiz, Question, User, QuestionType } from '../types';
 import { Plus, Trash2, Edit, ChevronRight, Clock, CheckCircle2, XCircle, AlertCircle, Loader2, Save, X, List, PlusCircle, Upload, Download, FileSpreadsheet, ChevronDown, ChevronUp } from 'lucide-react';
@@ -229,6 +229,7 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
   const [filterSubject, setFilterSubject] = useState<string>('all');
   const [filterTopic, setFilterTopic] = useState<string>('all');
   const [expandedQuestions, setExpandedQuestions] = useState<Record<number, boolean>>({ 0: true });
+  const [isRegistrationEnabled, setIsRegistrationEnabled] = useState(true);
 
   const subjects = ['Toán', 'Vật lý', 'Hóa học', 'Sinh học', 'Tiếng Anh', 'Lịch sử', 'Địa lý', 'GDCD', 'Ngữ văn', 'Tin học'];
   const topics = [
@@ -248,8 +249,28 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
       setLoading(false);
     });
 
-    return () => unsubscribe();
+    // Lấy cài đặt đăng ký
+    const settingsUnsubscribe = onSnapshot(doc(db, 'settings', 'registration'), (doc) => {
+      if (doc.exists()) {
+        setIsRegistrationEnabled(doc.data().enabled);
+      }
+    });
+
+    return () => {
+      unsubscribe();
+      settingsUnsubscribe();
+    };
   }, []);
+
+  const toggleRegistration = async () => {
+    try {
+      await setDoc(doc(db, 'settings', 'registration'), { enabled: !isRegistrationEnabled }, { merge: true });
+      setIsRegistrationEnabled(!isRegistrationEnabled);
+    } catch (error) {
+      console.error('Error toggling registration:', error);
+      alert('Có lỗi xảy ra khi cập nhật cài đặt.');
+    }
+  };
 
   const filteredQuizzes = quizzes.filter(quiz => {
     const matchSubject = filterSubject === 'all' || quiz.subject === filterSubject;
@@ -685,6 +706,23 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
             Xóa lọc
           </button>
         )}
+        <div className="ml-auto flex items-center gap-2">
+          <label className="text-xs font-bold text-stone-400 uppercase tracking-wider">Đăng ký:</label>
+          <button
+            onClick={toggleRegistration}
+            className={cn(
+              "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
+              isRegistrationEnabled ? "bg-emerald-600" : "bg-stone-200"
+            )}
+          >
+            <span
+              className={cn(
+                "inline-block h-4 w-4 transform rounded-full bg-white transition-transform",
+                isRegistrationEnabled ? "translate-x-6" : "translate-x-1"
+              )}
+            />
+          </button>
+        </div>
       </div>
 
       {loading ? (
