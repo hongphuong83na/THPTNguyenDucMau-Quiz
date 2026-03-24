@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { onAuthStateChanged } from 'firebase/auth';
-import { doc, getDoc } from 'firebase/firestore';
-import { auth, db, signInWithGoogle, logout, signInWithEmail, signUpWithEmail, sendPasswordReset, sendVerification } from './firebase';
+import { doc, getDoc, collection, query, where, getDocs, setDoc, deleteDoc, serverTimestamp, onSnapshot } from 'firebase/firestore';
+import { auth, db, signInWithGoogle, logout, signUpWithEmail, sendPasswordReset, sendVerification, signInWithUsernameOrEmail } from './firebase';
 import { User as AppUser } from './types';
-import { LogIn, LogOut, BookOpen, Loader2, AlertCircle, Clock, Mail, Lock, User as UserIcon, ArrowLeft } from 'lucide-react';
+import { LogIn, LogOut, BookOpen, Loader2, AlertCircle, Clock, Mail, Lock, User as UserIcon, ArrowLeft, Settings } from 'lucide-react';
+import ProfileModal from './components/ProfileModal';
 import { cn } from './lib/utils';
 
 // Pages
@@ -32,41 +33,89 @@ export default function App() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
+  const [username, setUsername] = useState('');
+  const [school, setSchool] = useState('');
+  const [className, setClassName] = useState('');
   const [authLoading, setAuthLoading] = useState(false);
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+    let userUnsubscribe: (() => void) | null = null;
+
+    const authUnsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (userUnsubscribe) {
+        userUnsubscribe();
+        userUnsubscribe = null;
+      }
+
       if (firebaseUser) {
-        const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
+        const userRef = doc(db, 'users', firebaseUser.uid);
+        let userDoc = await getDoc(userRef);
         const isAdminEmail = firebaseUser.email === 'nguyenphuongaistudent@gmail.com';
         
-        if (userDoc.exists()) {
-          const userData = userDoc.data() as AppUser;
-          // If it's the admin email but role is not admin or not approved, override it for the UI
-          if (isAdminEmail && (userData.role !== 'admin' || !userData.isApproved)) {
-            setUser({ ...userData, role: 'admin', isApproved: true, emailVerified: firebaseUser.emailVerified });
-          } else {
-            setUser({ ...userData, emailVerified: firebaseUser.emailVerified });
+        if (!userDoc.exists() && firebaseUser.email) {
+          // Check if there's an imported user with this email
+          const usersRef = collection(db, 'users');
+          const q = query(usersRef, where('email', '==', firebaseUser.email));
+          const querySnapshot = await getDocs(q);
+          if (!querySnapshot.empty) {
+            const importedDoc = querySnapshot.docs[0];
+            const importedData = importedDoc.data();
+            // Remove password from the data to be linked
+            const { password, ...safeData } = importedData;
+            
+            // Link this auth user to the imported data
+            await setDoc(doc(db, 'users', firebaseUser.uid), {
+              ...safeData,
+              uid: firebaseUser.uid,
+              username: safeData.username || firebaseUser.email.split('@')[0],
+              school: safeData.school || 'Trường Tự do',
+              class: safeData.class || 'Tự do',
+              updatedAt: serverTimestamp()
+            });
+            // Delete the old imported doc if it wasn't using the UID as ID
+            if (importedDoc.id !== firebaseUser.uid) {
+              await deleteDoc(doc(db, 'users', importedDoc.id));
+            }
+            userDoc = await getDoc(userRef);
           }
-        } else {
-          // Fallback if doc creation in signInWithGoogle failed or was delayed
-          setUser({
-            uid: firebaseUser.uid,
-            email: firebaseUser.email || '',
-            displayName: firebaseUser.displayName || '',
-            role: isAdminEmail ? 'admin' : 'student',
-            isApproved: isAdminEmail,
-            createdAt: null as any,
-            emailVerified: firebaseUser.emailVerified
-          } as AppUser);
         }
+
+        // Set up real-time listener for user data
+        userUnsubscribe = onSnapshot(userRef, (doc) => {
+          if (doc.exists()) {
+            const userData = doc.data() as AppUser;
+            if (isAdminEmail && (userData.role !== 'admin' || !userData.isApproved)) {
+              setUser({ ...userData, role: 'admin', isApproved: true, emailVerified: firebaseUser.emailVerified });
+            } else {
+              setUser({ ...userData, emailVerified: firebaseUser.emailVerified });
+            }
+          } else {
+            setUser({
+              uid: firebaseUser.uid,
+              email: firebaseUser.email || '',
+              displayName: firebaseUser.displayName || '',
+              role: isAdminEmail ? 'admin' : 'student',
+              isApproved: isAdminEmail,
+              createdAt: null as any,
+              emailVerified: firebaseUser.emailVerified
+            } as AppUser);
+          }
+          setLoading(false);
+        }, (error) => {
+          console.error("Error listening to user data:", error);
+          setLoading(false);
+        });
       } else {
         setUser(null);
+        setLoading(false);
       }
-      setLoading(false);
     });
 
-    return () => unsubscribe();
+    return () => {
+      authUnsubscribe();
+      if (userUnsubscribe) userUnsubscribe();
+    };
   }, []);
 
   const navigate = (page: Page, quizId: string | null = null) => {
@@ -103,10 +152,10 @@ export default function App() {
     setLoginError(null);
     setAuthLoading(true);
     try {
-      await signInWithEmail(email, password);
+      await signInWithUsernameOrEmail(email, password);
     } catch (error: any) {
       console.error('Email sign in failed:', error);
-      let message = 'Đăng nhập thất bại. Vui lòng kiểm tra lại email và mật khẩu.';
+      let message = error.message || 'Đăng nhập thất bại. Vui lòng kiểm tra lại email và mật khẩu.';
       if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password' || error.code === 'auth/invalid-credential') {
         message = 'Email hoặc mật khẩu không chính xác.';
       } else if (error.code === 'auth/too-many-requests') {
@@ -128,7 +177,14 @@ export default function App() {
       if (password.length < 6) {
         throw new Error('Mật khẩu phải có ít nhất 6 ký tự.');
       }
-      await signUpWithEmail(email, password, displayName);
+      if (!username || !displayName) {
+        throw new Error('Vui lòng điền đầy đủ các thông tin bắt buộc.');
+      }
+      
+      const finalSchool = school.trim() || 'Trường Tự do';
+      const finalClass = className.trim() || 'Tự do';
+      
+      await signUpWithEmail(email, password, displayName, username, finalSchool, finalClass);
     } catch (error: any) {
       console.error('Email sign up failed:', error);
       let message = 'Đăng ký thất bại. Vui lòng thử lại.';
@@ -201,8 +257,13 @@ export default function App() {
               <div className="absolute top-[-50%] left-[-50%] w-[200%] h-[200%] bg-[radial-gradient(circle,white_1px,transparent_1px)] [background-size:20px_20px]" />
             </div>
             <div className="relative z-10">
-              <div className="w-16 h-16 bg-white/10 backdrop-blur-md rounded-2xl flex items-center justify-center mx-auto mb-6 border border-white/20">
-                <BookOpen className="w-8 h-8 text-emerald-400" />
+              <div className="w-20 h-20 bg-white/10 backdrop-blur-md rounded-full flex items-center justify-center mx-auto mb-6 border border-white/20 overflow-hidden">
+                <img 
+                  src="https://lh3.googleusercontent.com/d/1nJFV426bMfXBj-Ce8neJl-GpSlLTJgmV" 
+                  alt="EduQuiz Logo" 
+                  className="w-full h-full object-cover"
+                  referrerPolicy="no-referrer"
+                />
               </div>
               <h1 className="text-4xl font-serif font-medium mb-2 italic tracking-tight">EduQuiz Pro</h1>
               <p className="text-stone-400 text-sm">Nền tảng thi trắc nghiệm trực tuyến chuyên nghiệp</p>
@@ -299,19 +360,69 @@ export default function App() {
               )}
 
               <div className="space-y-1">
-                <label className="text-xs font-bold text-stone-400 uppercase tracking-wider ml-1">Email</label>
+                <label className="text-xs font-bold text-stone-400 uppercase tracking-wider ml-1">
+                  {authMode === 'login' ? 'Email hoặc Tên đăng nhập' : 'Email'}
+                </label>
                 <div className="relative">
                   <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400" />
                   <input
-                    type="email"
+                    type={authMode === 'login' ? 'text' : 'email'}
                     required
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    placeholder="example@gmail.com"
+                    placeholder={authMode === 'login' ? "example@gmail.com hoặc username" : "example@gmail.com"}
                     className="w-full pl-11 pr-4 py-3 bg-stone-50 border border-stone-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
                   />
                 </div>
               </div>
+
+              {authMode === 'register' && (
+                <>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-stone-400 uppercase tracking-wider ml-1">Tên đăng nhập</label>
+                    <div className="relative">
+                      <UserIcon className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400" />
+                      <input
+                        type="text"
+                        required
+                        value={username}
+                        onChange={(e) => setUsername(e.target.value)}
+                        placeholder="username123"
+                        className="w-full pl-11 pr-4 py-3 bg-stone-50 border border-stone-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-stone-400 uppercase tracking-wider ml-1">Trường học</label>
+                      <div className="relative">
+                        <BookOpen className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400" />
+                        <input
+                          type="text"
+                          value={school}
+                          onChange={(e) => setSchool(e.target.value)}
+                          placeholder="Tên trường"
+                          className="w-full pl-11 pr-4 py-3 bg-stone-50 border border-stone-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-stone-400 uppercase tracking-wider ml-1">Lớp học</label>
+                      <div className="relative">
+                        <BookOpen className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400" />
+                        <input
+                          type="text"
+                          value={className}
+                          onChange={(e) => setClassName(e.target.value)}
+                          placeholder="Tên lớp"
+                          className="w-full pl-11 pr-4 py-3 bg-stone-50 border border-stone-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
 
               {authMode !== 'forgot-password' && (
                 <div className="space-y-1">
@@ -466,10 +577,15 @@ export default function App() {
               className="flex items-center gap-2 cursor-pointer" 
               onClick={() => navigate('home')}
             >
-              <div className="w-8 h-8 bg-emerald-600 rounded-lg flex items-center justify-center">
-                <BookOpen className="w-5 h-5 text-white" />
+              <div className="w-10 h-10 bg-emerald-600 rounded-full flex items-center justify-center overflow-hidden">
+                <img 
+                  src="https://lh3.googleusercontent.com/d/1nJFV426bMfXBj-Ce8neJl-GpSlLTJgmV" 
+                  alt="EduQuiz Logo" 
+                  className="w-full h-full object-cover"
+                  referrerPolicy="no-referrer"
+                />
               </div>
-              <span className="text-xl font-serif italic font-medium tracking-tight">EduQuiz</span>
+              <span className="text-xl font-serif italic font-medium tracking-tight">EduQuiz Pro</span>
             </div>
 
             <div className="flex items-center gap-4">
@@ -534,6 +650,13 @@ export default function App() {
                   <p className="text-xs text-stone-500 mt-1 capitalize">{user.role}</p>
                 </div>
                 <button
+                  onClick={() => setIsProfileOpen(true)}
+                  className="p-2 text-stone-500 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors"
+                  title="Chỉnh sửa thông tin cá nhân"
+                >
+                  <Settings className="w-5 h-5" />
+                </button>
+                <button
                   onClick={logout}
                   className="p-2 text-stone-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
                   title="Đăng xuất"
@@ -562,6 +685,16 @@ export default function App() {
         )}
         {currentPage === 'results' && <Results user={user} />}
       </main>
+
+      {isProfileOpen && (
+        <ProfileModal 
+          user={user} 
+          onClose={() => setIsProfileOpen(false)} 
+          onUpdate={() => {
+            // Force re-fetch user data if needed, but onSnapshot in App.tsx handles it
+          }}
+        />
+      )}
 
       <footer className="border-t border-stone-200 py-12 bg-white mt-auto">
         <div className="max-w-7xl mx-auto px-4 text-center">

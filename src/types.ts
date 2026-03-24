@@ -5,11 +5,15 @@ export type UserRole = 'admin' | 'teacher' | 'student' | 'guest';
 export interface User {
   uid: string;
   email: string;
+  username?: string;
   displayName?: string;
+  school?: string;
+  class?: string;
   role: UserRole;
   isApproved: boolean;
   createdAt: Timestamp;
   emailVerified?: boolean;
+  password?: string;
 }
 
 export type QuizTopic = 'regular' | 'periodic' | 'graduation';
@@ -25,6 +29,7 @@ export interface Quiz {
   createdBy: string;
   createdAt: Timestamp;
   isActive: boolean;
+  allowedRoles?: UserRole[];
 }
 
 export type QuestionType = 'multiple_choice' | 'true_false';
@@ -48,6 +53,8 @@ export interface Result {
   topic: QuizTopic;
   studentUid: string;
   studentName: string;
+  studentSchool?: string;
+  studentClass?: string;
   score: number;
   totalQuestions: number;
   correctAnswers: number;

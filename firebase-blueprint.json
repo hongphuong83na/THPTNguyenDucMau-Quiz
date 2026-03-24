@@ -7,7 +7,10 @@
       "properties": {
         "uid": { "type": "string", "description": "ID người dùng từ Firebase Auth" },
         "email": { "type": "string", "format": "email", "description": "Email người dùng" },
+        "username": { "type": "string", "description": "Tên đăng nhập duy nhất" },
         "displayName": { "type": "string", "description": "Tên hiển thị" },
+        "school": { "type": "string", "description": "Trường học" },
+        "class": { "type": "string", "description": "Lớp học" },
         "role": { "type": "string", "enum": ["admin", "teacher", "student"], "description": "Vai trò người dùng" },
         "isApproved": { "type": "boolean", "description": "Trạng thái phê duyệt tài khoản" },
         "createdAt": { "type": "string", "format": "date-time", "description": "Ngày tạo tài khoản" }
@@ -24,9 +27,15 @@
         "subject": { "type": "string", "description": "Môn học (Toán, Lý, Hóa...)" },
         "topic": { "type": "string", "enum": ["regular", "periodic", "graduation"], "description": "Chủ đề bài thi" },
         "duration": { "type": "integer", "description": "Thời gian làm bài (phút)" },
+        "maxAttempts": { "type": "integer", "description": "Số lượt thi tối đa" },
         "createdBy": { "type": "string", "description": "UID của admin tạo đề" },
         "createdAt": { "type": "string", "format": "date-time", "description": "Ngày tạo đề" },
-        "isActive": { "type": "boolean", "description": "Trạng thái đề thi" }
+        "isActive": { "type": "boolean", "description": "Trạng thái đề thi" },
+        "allowedRoles": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["student", "guest"] },
+          "description": "Các vai trò được phép tham gia thi"
+        }
       },
       "required": ["title", "duration", "createdBy"]
     },
@@ -71,12 +80,22 @@
         }
       },
       "required": ["quizId", "studentUid", "score", "completedAt"]
+    },
+    "Setting": {
+      "title": "Setting",
+      "description": "Cấu hình hệ thống.",
+      "type": "object",
+      "properties": {
+        "registrationEnabled": { "type": "boolean", "description": "Cho phép đăng ký tài khoản mới" }
+      },
+      "required": ["registrationEnabled"]
     }
   },
   "firestore": {
     "/users/{uid}": { "schema": "User", "description": "Thông tin người dùng" },
     "/quizzes/{quizId}": { "schema": "Quiz", "description": "Danh sách các bài thi" },
     "/quizzes/{quizId}/questions/{questionId}": { "schema": "Question", "description": "Câu hỏi của từng bài thi" },
-    "/results/{resultId}": { "schema": "Result", "description": "Kết quả thi của học sinh" }
+    "/results/{resultId}": { "schema": "Result", "description": "Kết quả thi của học sinh" },
+    "/settings/{settingId}": { "schema": "Setting", "description": "Cấu hình hệ thống" }
   }
 }

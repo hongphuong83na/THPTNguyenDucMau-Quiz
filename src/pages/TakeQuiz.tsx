@@ -42,7 +42,7 @@ export default function TakeQuiz({ quizId, user, onComplete, onCancel }: TakeQui
         if (foundQuiz) {
           const quizData = { id: foundQuiz.id, ...foundQuiz.data() } as Quiz;
           
-          if (quizData.maxAttempts && quizData.maxAttempts > 0 && attemptCount >= quizData.maxAttempts) {
+          if (user.role !== 'admin' && quizData.maxAttempts && quizData.maxAttempts > 0 && attemptCount >= quizData.maxAttempts) {
             setAttemptError(`Bạn đã hết lượt làm bài thi này (Tối đa: ${quizData.maxAttempts} lượt).`);
             setLoading(false);
             return;
@@ -52,13 +52,57 @@ export default function TakeQuiz({ quizId, user, onComplete, onCancel }: TakeQui
           setTimeLeft(foundQuiz.data().duration * 60);
           
           const questionsSnapshot = await getDocs(query(collection(db, 'quizzes', quizId, 'questions'), orderBy('order')));
-          const questionList = questionsSnapshot.docs.map(doc => ({
+          let questionList = questionsSnapshot.docs.map(doc => ({
             id: doc.id,
             ...doc.data()
           })) as Question[];
-          setQuestions(questionList);
-          setAnswers(new Array(questionList.length).fill(-1).map((_, i) => 
-            questionList[i].type === 'true_false' ? [true, true, true, true] : -1
+
+          // Helper to shuffle array
+          const shuffleArray = <T,>(array: T[]): T[] => {
+            const newArr = [...array];
+            for (let i = newArr.length - 1; i > 0; i--) {
+              const j = Math.floor(Math.random() * (i + 1));
+              [newArr[i], newArr[j]] = [newArr[j], newArr[i]];
+            }
+            return newArr;
+          };
+
+          // Shuffle options within each question
+          questionList = questionList.map(q => {
+            if (q.type === 'multiple_choice' && q.options) {
+              const optionsWithCorrect = q.options.map((opt, idx) => ({
+                text: opt,
+                isCorrect: idx === q.correctOptionIndex
+              }));
+              const shuffledOptions = shuffleArray(optionsWithCorrect);
+              return {
+                ...q,
+                options: shuffledOptions.map(o => o.text),
+                correctOptionIndex: shuffledOptions.findIndex(o => o.isCorrect)
+              };
+            } else if (q.type === 'true_false' && q.options && q.correctAnswers) {
+              const subStatementsWithCorrect = q.options.map((opt, idx) => ({
+                text: opt,
+                isCorrect: q.correctAnswers![idx]
+              }));
+              const shuffledSubStatements = shuffleArray(subStatementsWithCorrect);
+              return {
+                ...q,
+                options: shuffledSubStatements.map(s => s.text),
+                correctAnswers: shuffledSubStatements.map(s => s.isCorrect)
+              };
+            }
+            return q;
+          });
+
+          // Shuffle questions within their parts (MC first, then TF)
+          const mcQuestions = shuffleArray(questionList.filter(q => q.type === 'multiple_choice'));
+          const tfQuestions = shuffleArray(questionList.filter(q => q.type === 'true_false'));
+          const shuffledQuestions = [...mcQuestions, ...tfQuestions];
+
+          setQuestions(shuffledQuestions);
+          setAnswers(new Array(shuffledQuestions.length).fill(-1).map((_, i) => 
+            shuffledQuestions[i].type === 'true_false' ? [null, null, null, null] : -1
           ));
         }
       } catch (error) {
@@ -120,6 +164,8 @@ export default function TakeQuiz({ quizId, user, onComplete, onCancel }: TakeQui
         topic: quiz?.topic,
         studentUid: user.uid,
         studentName: user.displayName,
+        studentSchool: user.school || '',
+        studentClass: user.class || '',
         score: Number(totalScore.toFixed(2)),
         totalQuestions: questions.length,
         correctAnswers: correctCount,
@@ -157,7 +203,7 @@ export default function TakeQuiz({ quizId, user, onComplete, onCancel }: TakeQui
 
   const handleTFAnswerSelect = (subIndex: number, value: boolean) => {
     const newAnswers = [...answers];
-    const currentTFAnswers = [...(newAnswers[currentQuestionIndex] as boolean[] || [true, true, true, true])];
+    const currentTFAnswers = [...(newAnswers[currentQuestionIndex] as (boolean | null)[] || [null, null, null, null])];
     currentTFAnswers[subIndex] = value;
     newAnswers[currentQuestionIndex] = currentTFAnswers;
     setAnswers(newAnswers);
@@ -253,7 +299,7 @@ export default function TakeQuiz({ quizId, user, onComplete, onCancel }: TakeQui
             {currentQuestionIndex + 1}
           </div>
           <div>
-            <h2 className="text-sm font-medium text-stone-900 line-clamp-1">{quiz.title}</h2>
+            <h2 className="text-sm font-medium text-stone-900">{quiz.title}</h2>
             <div className="w-48 h-1.5 bg-stone-100 rounded-full mt-1 overflow-hidden">
               <div 
                 className="h-full bg-emerald-500 transition-all duration-300" 
@@ -285,26 +331,26 @@ export default function TakeQuiz({ quizId, user, onComplete, onCancel }: TakeQui
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
         {/* Main Question Area */}
-        <div className="lg:col-span-3 space-y-8">
+        <div className="lg:col-span-3 space-y-6 min-w-0">
           {/* Question Card */}
-          <div className="bg-white rounded-3xl border border-stone-200 p-8 sm:p-12 shadow-sm min-h-[400px] flex flex-col">
-            <div className="flex-grow">
-              <p className="text-sm font-bold text-stone-400 uppercase tracking-widest mb-4">
+          <div className="bg-white rounded-3xl border border-stone-200 p-4 sm:p-6 md:p-8 shadow-sm min-h-[350px] flex flex-col">
+            <div className="flex-grow min-w-0 break-words whitespace-normal">
+              <p className="text-xs font-bold text-stone-400 uppercase tracking-widest mb-2">
                 {currentQuestion.type === 'multiple_choice' ? 'Phần 1: Trắc nghiệm' : 'Phần 2: Đúng/Sai'} - Câu {currentQuestionIndex + 1} / {questions.length}
               </p>
               <h3 
-                className="text-2xl font-medium text-stone-900 mb-10 leading-relaxed markdown-body break-words"
+                className="text-lg sm:text-xl font-sans font-medium text-stone-900 mb-4 leading-relaxed markdown-body break-words whitespace-normal w-full"
                 dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(currentQuestion.text) }}
               />
 
-              <div className="grid grid-cols-1 gap-4">
+              <div className="grid grid-cols-1 gap-2">
                 {currentQuestion.type === 'multiple_choice' ? (
                   currentQuestion.options.map((option, index) => (
                     <button
                       key={index}
                       onClick={() => handleAnswerSelect(index)}
                       className={cn(
-                        "flex items-center gap-4 p-5 rounded-2xl border-2 text-left transition-all group",
+                        "flex items-center gap-4 p-4 rounded-2xl border-2 text-left transition-all group",
                         answers[currentQuestionIndex] === index 
                           ? "border-emerald-500 bg-emerald-50/30 ring-4 ring-emerald-500/5" 
                           : "border-stone-100 hover:border-stone-200 hover:bg-stone-50"
@@ -318,45 +364,47 @@ export default function TakeQuiz({ quizId, user, onComplete, onCancel }: TakeQui
                       )}>
                         {String.fromCharCode(65 + index)}
                       </div>
-                      <span className={cn(
-                        "text-lg font-medium transition-colors break-words flex-1 min-w-0",
+                      <div className={cn(
+                        "text-sm sm:text-base font-sans font-medium transition-colors flex-1 min-w-0 break-words whitespace-normal w-full",
+                        currentQuestion.type === 'true_false' && "markdown-body",
                         answers[currentQuestionIndex] === index ? "text-emerald-900" : "text-stone-700"
-                      )}>
-                        {option}
-                      </span>
+                      )}
+                      dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(option) }}
+                      />
                     </button>
                   ))
                 ) : (
-                  <div className="space-y-4">
+                  <div className="space-y-3">
                     {['a', 'b', 'c', 'd'].map((label, index) => (
-                      <div key={index} className="flex flex-col sm:flex-row sm:items-center justify-between p-5 rounded-2xl border border-stone-100 bg-stone-50/30 gap-4">
-                        <div className="flex items-center gap-4 flex-grow min-w-0">
-                          <span className="font-bold text-emerald-600 w-6 shrink-0">{label}.</span>
-                          <span className="text-stone-700 font-medium break-words">{currentQuestion.options[index]}</span>
+                      <div key={index} className="flex flex-col sm:flex-row sm:items-start justify-between p-3 rounded-2xl border border-stone-100 bg-stone-50/30 gap-3">
+                        <div className="flex items-start gap-3 flex-grow min-w-0">
+                          <span className="font-bold text-emerald-600 w-6 shrink-0 mt-1">{label}.</span>
+                          <div 
+                            className="text-stone-700 text-xs sm:text-sm font-sans font-medium flex-1 markdown-body leading-relaxed prose prose-stone max-w-none break-words whitespace-normal w-full"
+                            dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(currentQuestion.options[index]) }}
+                          />
                         </div>
-                        <div className="flex items-center gap-2 bg-white p-1 rounded-xl border border-stone-200 shadow-sm">
-                          <button
-                            onClick={() => handleTFAnswerSelect(index, true)}
-                            className={cn(
-                              "px-6 py-2 rounded-lg text-sm font-bold transition-all",
-                              (answers[currentQuestionIndex] as boolean[])?.[index] === true 
-                                ? "bg-emerald-600 text-white shadow-md" 
-                                : "text-stone-400 hover:text-stone-600 hover:bg-stone-50"
-                            )}
-                          >
-                            Đúng
-                          </button>
-                          <button
-                            onClick={() => handleTFAnswerSelect(index, false)}
-                            className={cn(
-                              "px-6 py-2 rounded-lg text-sm font-bold transition-all",
-                              (answers[currentQuestionIndex] as boolean[])?.[index] === false 
-                                ? "bg-red-600 text-white shadow-md" 
-                                : "text-stone-400 hover:text-stone-600 hover:bg-stone-50"
-                            )}
-                          >
-                            Sai
-                          </button>
+                        <div className="flex items-center gap-4 bg-white px-4 py-2 rounded-xl border border-stone-200 shadow-sm shrink-0">
+                          <label className="flex items-center gap-2 cursor-pointer group">
+                            <input
+                              type="radio"
+                              name={`q-${currentQuestionIndex}-o-${index}`}
+                              checked={(answers[currentQuestionIndex] as boolean[])?.[index] === true}
+                              onChange={() => handleTFAnswerSelect(index, true)}
+                              className="w-5 h-5 text-emerald-600 focus:ring-emerald-500 border-stone-300"
+                            />
+                            <span className={cn("text-sm font-bold transition-colors", (answers[currentQuestionIndex] as boolean[])?.[index] === true ? "text-emerald-600" : "text-stone-400 group-hover:text-stone-600")}>Đúng</span>
+                          </label>
+                          <label className="flex items-center gap-2 cursor-pointer group">
+                            <input
+                              type="radio"
+                              name={`q-${currentQuestionIndex}-o-${index}`}
+                              checked={(answers[currentQuestionIndex] as boolean[])?.[index] === false}
+                              onChange={() => handleTFAnswerSelect(index, false)}
+                              className="w-5 h-5 text-red-600 focus:ring-red-500 border-stone-300"
+                            />
+                            <span className={cn("text-sm font-bold transition-colors", (answers[currentQuestionIndex] as boolean[])?.[index] === false ? "text-red-600" : "text-stone-400 group-hover:text-stone-600")}>Sai</span>
+                          </label>
                         </div>
                       </div>
                     ))}
@@ -365,7 +413,7 @@ export default function TakeQuiz({ quizId, user, onComplete, onCancel }: TakeQui
               </div>
             </div>
 
-            <div className="flex items-center justify-between mt-12 pt-8 border-t border-stone-50">
+            <div className="flex items-center justify-between mt-8 pt-6 border-t border-stone-50">
               <button
                 onClick={() => setCurrentQuestionIndex(prev => Math.max(0, prev - 1))}
                 disabled={currentQuestionIndex === 0}
@@ -402,20 +450,20 @@ export default function TakeQuiz({ quizId, user, onComplete, onCancel }: TakeQui
               <p className="text-xs font-bold text-stone-400 uppercase tracking-widest">Danh sách câu hỏi</p>
             </div>
 
-            <div className="space-y-6 max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar">
+            <div className="space-y-6 pr-2">
               {mcQuestions.length > 0 && (
                 <div>
                   <p className="text-[10px] font-bold text-stone-400 uppercase mb-3 px-1">Phần 1: Trắc nghiệm</p>
-                  <div className="grid grid-cols-5 gap-2">
+                  <div className="grid grid-cols-4 gap-3">
                     {mcQuestions.map((q) => (
                       <button
                         key={q.originalIndex}
                         onClick={() => setCurrentQuestionIndex(q.originalIndex)}
                         className={cn(
-                          "w-9 h-9 rounded-lg flex items-center justify-center text-xs font-bold transition-all",
+                          "w-11 h-11 rounded-xl flex items-center justify-center text-xs font-bold transition-all",
                           currentQuestionIndex === q.originalIndex 
                             ? "bg-stone-900 text-white shadow-md scale-110 z-10" 
-                            : answers[q.originalIndex] !== -1 
+                            : answers[q.originalIndex] !== -1 && (!Array.isArray(answers[q.originalIndex]) || (answers[q.originalIndex] as (boolean | null)[]).some(a => a !== null))
                               ? "bg-emerald-500 text-white shadow-sm" 
                               : "bg-stone-100 text-stone-500 hover:bg-stone-200"
                         )}
@@ -430,16 +478,18 @@ export default function TakeQuiz({ quizId, user, onComplete, onCancel }: TakeQui
               {tfQuestions.length > 0 && (
                 <div>
                   <p className="text-[10px] font-bold text-stone-400 uppercase mb-3 px-1">Phần 2: Đúng/Sai</p>
-                  <div className="grid grid-cols-5 gap-2">
+                  <div className="grid grid-cols-4 gap-3">
                     {tfQuestions.map((q) => (
                       <button
                         key={q.originalIndex}
                         onClick={() => setCurrentQuestionIndex(q.originalIndex)}
                         className={cn(
-                          "w-9 h-9 rounded-lg flex items-center justify-center text-xs font-bold transition-all",
+                          "w-11 h-11 rounded-xl flex items-center justify-center text-xs font-bold transition-all",
                           currentQuestionIndex === q.originalIndex 
                             ? "bg-stone-900 text-white shadow-md scale-110 z-10" 
-                            : "bg-emerald-500 text-white shadow-sm"
+                            : (answers[q.originalIndex] as (boolean | null)[]).some(a => a !== null)
+                              ? "bg-emerald-500 text-white shadow-sm"
+                              : "bg-stone-100 text-stone-500 hover:bg-stone-200"
                         )}
                       >
                         {q.originalIndex + 1}

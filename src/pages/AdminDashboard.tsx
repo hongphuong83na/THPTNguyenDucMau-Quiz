@@ -1,16 +1,221 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, memo } from 'react';
 import ReactQuill from 'react-quill-new';
-import { collection, onSnapshot, query, orderBy, addDoc, serverTimestamp, updateDoc, doc, deleteDoc, getDocs, writeBatch, deleteField } from 'firebase/firestore';
+import * as XLSX from 'xlsx';
+import { collection, onSnapshot, query, orderBy, addDoc, serverTimestamp, updateDoc, doc, deleteDoc, getDocs, writeBatch, deleteField, where } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { Quiz, Question, User, QuestionType } from '../types';
-import { Plus, Trash2, Edit, ChevronRight, Clock, CheckCircle2, XCircle, AlertCircle, Loader2, Save, X, List, PlusCircle, Upload, Download } from 'lucide-react';
+import { Plus, Trash2, Edit, ChevronRight, Clock, CheckCircle2, XCircle, AlertCircle, Loader2, Save, X, List, PlusCircle, Upload, Download, FileSpreadsheet, ChevronDown, ChevronUp } from 'lucide-react';
 import { formatDuration, formatDate, cn } from '../lib/utils';
 import ImportQuizModal from '../components/ImportQuizModal';
 import { ImportedQuiz, downloadFile } from '../lib/importUtils';
+import DOMPurify from 'dompurify';
 
 interface AdminDashboardProps {
   user: User;
 }
+
+// Memoized QuestionEditor component for performance
+const QuestionEditor = memo(({ 
+  q, 
+  qIndex, 
+  onUpdate, 
+  onUpdateOption, 
+  onRemove,
+  isExpanded,
+  onToggleExpand
+}: { 
+  q: Partial<Question>; 
+  qIndex: number; 
+  onUpdate: (index: number, field: string, value: any) => void;
+  onUpdateOption: (qIndex: number, oIndex: number, value: string) => void;
+  onRemove: (index: number) => void;
+  isExpanded: boolean;
+  onToggleExpand: (index: number) => void;
+}) => {
+  return (
+    <div className={cn(
+      "p-6 bg-stone-50 rounded-2xl border transition-all duration-200 relative group",
+      isExpanded ? "border-emerald-200 shadow-md ring-1 ring-emerald-100" : "border-stone-200 hover:border-stone-300"
+    )}>
+      <div className="flex items-center justify-between gap-4 mb-2">
+        <div className="flex items-center gap-3 cursor-pointer flex-1 min-w-0" onClick={() => onToggleExpand(qIndex)}>
+          <div className="w-8 h-8 rounded-full bg-stone-200 flex items-center justify-center text-xs font-bold text-stone-600 shrink-0">
+            {qIndex + 1}
+          </div>
+          <div className="flex-1 min-w-0">
+            {!isExpanded ? (
+              <div 
+                className="text-sm text-stone-600 truncate font-medium"
+                dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(q.text || 'Câu hỏi chưa có nội dung...') }}
+              />
+            ) : (
+              <span className="text-sm font-bold text-stone-400 uppercase tracking-wider">Đang chỉnh sửa câu hỏi {qIndex + 1}</span>
+            )}
+          </div>
+        </div>
+        
+        <div className="flex items-center gap-1 shrink-0">
+          <button
+            onClick={() => onToggleExpand(qIndex)}
+            className="p-2 text-stone-400 hover:text-stone-600 hover:bg-white rounded-lg transition-all"
+            title={isExpanded ? "Thu gọn" : "Mở rộng"}
+          >
+            {isExpanded ? <ChevronUp className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}
+          </button>
+          <button
+            onClick={() => onRemove(qIndex)}
+            className="p-2 text-stone-400 hover:text-red-600 hover:bg-white rounded-lg transition-all"
+            title="Xóa câu hỏi"
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+
+      {isExpanded && (
+        <div className="space-y-6 pt-4 border-t border-stone-200 mt-4 animate-in fade-in slide-in-from-top-2 duration-200">
+          <div className="flex flex-col sm:flex-row gap-4">
+            <div className="flex-grow space-y-2">
+              <label className="text-xs font-bold text-stone-400 uppercase">Loại câu hỏi</label>
+              <select
+                value={q.type || 'multiple_choice'}
+                onChange={(e) => {
+                  const type = e.target.value as QuestionType;
+                  onUpdate(qIndex, 'type', type);
+                  onUpdate(qIndex, 'options', ['', '', '', '']);
+                  onUpdate(qIndex, 'correctOptionIndex', type === 'multiple_choice' ? 0 : undefined);
+                  onUpdate(qIndex, 'correctAnswers', type === 'true_false' ? [null, null, null, null] : undefined);
+                }}
+                className="w-full px-4 py-2 bg-white border border-stone-200 rounded-lg focus:outline-none focus:border-emerald-500 transition-all"
+              >
+                <option value="multiple_choice">Nhiều lựa chọn</option>
+                <option value="true_false">Đúng / Sai</option>
+              </select>
+            </div>
+            <div className="flex-grow-[2] space-y-2">
+              <label className="text-xs font-bold text-stone-400 uppercase">Nội dung câu hỏi</label>
+              <div className="bg-white rounded-xl overflow-hidden border border-stone-200">
+                <ReactQuill
+                  theme="snow"
+                  value={q.text || ''}
+                  onChange={(val) => onUpdate(qIndex, 'text', val)}
+                  modules={{
+                    toolbar: [
+                      [{ 'header': [1, 2, false] }],
+                      ['bold', 'italic', 'underline', 'strike'],
+                      [{ 'list': 'ordered' }, { 'list': 'bullet' }],
+                      ['link', 'image', 'video'],
+                      ['clean']
+                    ],
+                  }}
+                  placeholder="Nhập nội dung câu hỏi (có thể chèn bảng, hình ảnh)..."
+                />
+              </div>
+            </div>
+          </div>
+
+          {q.type === 'multiple_choice' ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {q.options?.map((opt, oIndex) => (
+                <div key={oIndex} className="flex items-center gap-3">
+                  <input
+                    type="radio"
+                    name={`correct-${qIndex}`}
+                    checked={q.correctOptionIndex === oIndex}
+                    onChange={() => onUpdate(qIndex, 'correctOptionIndex', oIndex)}
+                    className="w-4 h-4 text-emerald-600 focus:ring-emerald-500"
+                  />
+                  <input
+                    type="text"
+                    value={opt || ''}
+                    onChange={(e) => onUpdateOption(qIndex, oIndex, e.target.value)}
+                    className="flex-grow min-w-0 px-4 py-3 bg-white border border-stone-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
+                    placeholder={`Lựa chọn ${oIndex + 1}`}
+                  />
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <p className="text-xs font-bold text-stone-400 uppercase">Các ý (a, b, c, d) - Chọn Đúng hoặc Sai</p>
+              {['a', 'b', 'c', 'd'].map((label, oIndex) => (
+                <div key={oIndex} className="flex flex-col sm:flex-row sm:items-start gap-4 p-4 bg-white border border-stone-100 rounded-xl">
+                  <div className="flex items-start gap-3 flex-grow min-w-0">
+                    <span className="font-bold text-emerald-600 w-6 mt-2">{label}.</span>
+                    <div className="flex-grow min-w-0 bg-stone-50 rounded-lg overflow-hidden border border-stone-200">
+                      <ReactQuill
+                        theme="snow"
+                        value={q.options?.[oIndex] || ''}
+                        onChange={(val) => onUpdateOption(qIndex, oIndex, val)}
+                        modules={{
+                          toolbar: [
+                            ['bold', 'italic', 'underline'],
+                            ['clean']
+                          ],
+                        }}
+                        placeholder={`Nội dung ý ${label}...`}
+                      />
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-6 bg-stone-100 px-4 py-2 rounded-lg mt-2 sm:mt-0">
+                    <label className="flex items-center gap-2 cursor-pointer group">
+                      <input
+                        type="radio"
+                        name={`q-${qIndex}-o-${oIndex}`}
+                        checked={q.correctAnswers?.[oIndex] === true}
+                        onChange={() => {
+                          const newCorrect = [...(q.correctAnswers || [null, null, null, null])];
+                          newCorrect[oIndex] = true;
+                          onUpdate(qIndex, 'correctAnswers', newCorrect);
+                        }}
+                        className="w-4 h-4 text-emerald-600 focus:ring-emerald-500 border-stone-300"
+                      />
+                      <span className={cn("text-xs font-bold transition-colors", q.correctAnswers?.[oIndex] === true ? "text-emerald-600" : "text-stone-500 group-hover:text-stone-700")}>Đúng</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer group">
+                      <input
+                        type="radio"
+                        name={`q-${qIndex}-o-${oIndex}`}
+                        checked={q.correctAnswers?.[oIndex] === false}
+                        onChange={() => {
+                          const newCorrect = [...(q.correctAnswers || [null, null, null, null])];
+                          newCorrect[oIndex] = false;
+                          onUpdate(qIndex, 'correctAnswers', newCorrect);
+                        }}
+                        className="w-4 h-4 text-red-600 focus:ring-red-500 border-stone-300"
+                      />
+                      <span className={cn("text-xs font-bold transition-colors", q.correctAnswers?.[oIndex] === false ? "text-red-600" : "text-stone-500 group-hover:text-stone-700")}>Sai</span>
+                    </label>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="space-y-2">
+            <label className="text-xs font-bold text-stone-400 uppercase">Giải thích (không bắt buộc)</label>
+            <div className="bg-white rounded-xl overflow-hidden border border-stone-200">
+              <ReactQuill
+                theme="snow"
+                value={q.explanation || ''}
+                onChange={(val) => onUpdate(qIndex, 'explanation', val)}
+                modules={{
+                  toolbar: [
+                    ['bold', 'italic', 'underline'],
+                    [{ 'list': 'ordered' }, { 'list': 'bullet' }],
+                    ['link', 'image'],
+                    ['clean']
+                  ],
+                }}
+                placeholder="Giải thích tại sao đáp án này đúng..."
+              />
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+});
 
 export default function AdminDashboard({ user }: AdminDashboardProps) {
   const [quizzes, setQuizzes] = useState<Quiz[]>([]);
@@ -23,6 +228,7 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
   const [saving, setSaving] = useState(false);
   const [filterSubject, setFilterSubject] = useState<string>('all');
   const [filterTopic, setFilterTopic] = useState<string>('all');
+  const [expandedQuestions, setExpandedQuestions] = useState<Record<number, boolean>>({ 0: true });
 
   const subjects = ['Toán', 'Vật lý', 'Hóa học', 'Sinh học', 'Tiếng Anh', 'Lịch sử', 'Địa lý', 'GDCD', 'Ngữ văn', 'Tin học'];
   const topics = [
@@ -61,6 +267,7 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
     })) as Question[];
     setEditingQuestions(questionList);
     setOriginalQuestionIds(questionList.map(q => q.id));
+    setExpandedQuestions({ 0: true }); // Expand first question by default
     setSaving(false);
     setIsModalOpen(true);
   };
@@ -79,11 +286,12 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
       text: '',
       options: ['', '', '', ''],
       correctOptionIndex: 0,
-      correctAnswers: [true, true, true, true],
+      correctAnswers: [null, null, null, null],
       explanation: '',
       order: 0
     }]);
     setOriginalQuestionIds([]);
+    setExpandedQuestions({ 0: true });
     setIsModalOpen(true);
   };
 
@@ -96,16 +304,20 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
       duration: imported.duration,
       isActive: true
     });
-    setEditingQuestions(imported.questions.map((q, index) => ({
-      ...q,
-      type: q.type || 'multiple_choice',
-      options: q.options || ['', '', '', ''],
-      correctOptionIndex: q.correctOptionIndex ?? 0,
-      correctAnswers: q.correctAnswers || [true, true, true, true],
-      explanation: q.explanation || '',
-      order: q.order ?? index
-    })));
+    setEditingQuestions(imported.questions.map((q, index) => {
+      const { id, ...rest } = q as any;
+      return {
+        ...rest,
+        type: q.type || 'multiple_choice',
+        options: q.options || ['', '', '', ''],
+        correctOptionIndex: q.correctOptionIndex ?? 0,
+        correctAnswers: q.correctAnswers || [null, null, null, null],
+        explanation: q.explanation || '',
+        order: q.order ?? index
+      };
+    }));
     setOriginalQuestionIds([]);
+    setExpandedQuestions({ 0: true });
     setIsModalOpen(true);
   };
 
@@ -141,6 +353,52 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
     }
   };
 
+  const handleExportResults = async (quiz: Quiz) => {
+    try {
+      setSaving(true);
+      const resultsSnapshot = await getDocs(query(collection(db, 'results'), where('quizId', '==', quiz.id), orderBy('completedAt', 'desc')));
+      const results = resultsSnapshot.docs.map(doc => doc.data());
+
+      if (results.length === 0) {
+        alert('Chưa có kết quả nào cho bài thi này.');
+        return;
+      }
+
+      // Fetch user details for school and class
+      const userUids = Array.from(new Set(results.map(r => r.studentUid)));
+      const usersData: Record<string, any> = {};
+      
+      // Batch fetch users (Firestore doesn't support 'in' with more than 30, but let's assume it's fine for now or do it in chunks)
+      for (let i = 0; i < userUids.length; i += 30) {
+        const chunk = userUids.slice(i, i + 30);
+        const usersSnapshot = await getDocs(query(collection(db, 'users'), where('uid', 'in', chunk)));
+        usersSnapshot.docs.forEach(doc => {
+          usersData[doc.id] = doc.data();
+        });
+      }
+
+      const exportData = results.map((r: any) => ({
+        'Họ và tên': r.studentName,
+        'Email': usersData[r.studentUid]?.email || '',
+        'Trường': usersData[r.studentUid]?.school || '',
+        'Lớp': usersData[r.studentUid]?.class || '',
+        'Điểm số': r.score.toFixed(2),
+        'Số câu đúng': `${r.correctAnswers}/${r.totalQuestions}`,
+        'Thời gian hoàn thành': r.completedAt?.toDate().toLocaleString('vi-VN') || ''
+      }));
+
+      const ws = XLSX.utils.json_to_sheet(exportData);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Kết quả");
+      XLSX.writeFile(wb, `Ket_qua_${quiz.title.replace(/\s+/g, '_')}.xlsx`);
+    } catch (error) {
+      console.error('Error exporting results:', error);
+      alert('Có lỗi xảy ra khi xuất kết quả.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleSave = async () => {
     if (!editingQuiz?.title || !editingQuiz?.duration) {
       alert('Vui lòng nhập tiêu đề và thời gian làm bài.');
@@ -154,9 +412,10 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
         return q.options && q.options.length >= 2 && q.options.every(opt => opt && opt.trim() !== '');
       } else if (q.type === 'true_false') {
         // For True/False, we always have 4 options in the UI.
-        // We should allow some to be empty if the user doesn't want all 4 statements.
-        // But we should require at least one statement to be filled.
-        return q.options && q.options.length === 4 && q.options.some(opt => opt && opt.trim() !== '');
+        // We require all 4 options to be filled and all 4 answers to be selected.
+        const allOptionsFilled = q.options && q.options.length === 4 && q.options.every(opt => opt && opt.trim() !== '' && opt !== '<p><br></p>');
+        const allAnswersSelected = q.correctAnswers && q.correctAnswers.length === 4 && q.correctAnswers.every(ans => ans !== null);
+        return allOptionsFilled && allAnswersSelected;
       }
       return false;
     });
@@ -177,6 +436,7 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
         duration: Number(editingQuiz.duration),
         maxAttempts: Number(editingQuiz.maxAttempts || 0),
         isActive: editingQuiz.isActive ?? true,
+        allowedRoles: editingQuiz.allowedRoles || ['student', 'guest'],
         updatedAt: serverTimestamp()
       };
 
@@ -214,7 +474,8 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
           type: q.type || 'multiple_choice',
           text: q.text,
           explanation: q.explanation || '',
-          order: i // Use the current index in validQuestions to preserve order
+          order: i, // Use the current index in validQuestions to preserve order
+          updatedAt: serverTimestamp()
         };
 
         if (q.id) {
@@ -229,12 +490,11 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
             if (isNaN(qData.correctOptionIndex) || qData.correctOptionIndex < 0 || qData.correctOptionIndex >= qData.options.length) {
               qData.correctOptionIndex = 0;
             }
-            qData.correctAnswers = deleteField(); 
           } else {
             // Ensure correctAnswers is exactly 4 booleans
             let ca = q.correctAnswers;
             if (!Array.isArray(ca)) ca = [true, true, true, true];
-            qData.correctAnswers = ca.slice(0, 4).map(v => !!v);
+            qData.correctAnswers = ca.slice(0, 4).map(v => v === null ? true : !!v);
             while (qData.correctAnswers.length < 4) qData.correctAnswers.push(true);
             
             // Ensure options is exactly 4 strings
@@ -242,10 +502,8 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
             if (!Array.isArray(opts)) opts = ['', '', '', ''];
             qData.options = opts.slice(0, 4).map(v => String(v || ''));
             while (qData.options.length < 4) qData.options.push('');
-            
-            qData.correctOptionIndex = deleteField();
           }
-          batch.update(doc(questionsCol, q.id), qData);
+          batch.set(doc(questionsCol, q.id), qData);
           keptQuestionIds.add(q.id);
         } else {
           if (q.type === 'multiple_choice') {
@@ -263,7 +521,7 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
             // Ensure correctAnswers is exactly 4 booleans
             let ca = q.correctAnswers;
             if (!Array.isArray(ca)) ca = [true, true, true, true];
-            qData.correctAnswers = ca.slice(0, 4).map(v => !!v);
+            qData.correctAnswers = ca.slice(0, 4).map(v => v === null ? true : !!v);
             while (qData.correctAnswers.length < 4) qData.correctAnswers.push(true);
             
             // Ensure options is exactly 4 strings
@@ -319,35 +577,52 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
     }
   };
 
-  const addQuestion = () => {
-    setEditingQuestions([...editingQuestions, {
+  const addQuestion = useCallback(() => {
+    setEditingQuestions(prev => [...prev, {
       type: 'multiple_choice',
       text: '',
       options: ['', '', '', ''],
       correctOptionIndex: 0,
-      correctAnswers: [true, true, true, true],
+      correctAnswers: [null, null, null, null],
       explanation: '',
-      order: editingQuestions.length
+      order: prev.length
     }]);
-  };
+    setExpandedQuestions(prev => ({ ...prev, [editingQuestions.length]: true }));
+  }, [editingQuestions.length]);
 
-  const removeQuestion = (index: number) => {
-    setEditingQuestions(editingQuestions.filter((_, i) => i !== index));
-  };
+  const removeQuestion = useCallback((index: number) => {
+    setEditingQuestions(prev => prev.filter((_, i) => i !== index));
+    setExpandedQuestions(prev => {
+      const next = { ...prev };
+      delete next[index];
+      return next;
+    });
+  }, []);
 
-  const updateQuestion = (index: number, field: string, value: any) => {
-    const newQuestions = [...editingQuestions];
-    newQuestions[index] = { ...newQuestions[index], [field]: value };
-    setEditingQuestions(newQuestions);
-  };
+  const updateQuestion = useCallback((index: number, field: string, value: any) => {
+    setEditingQuestions(prev => {
+      const next = [...prev];
+      next[index] = { ...next[index], [field]: value };
+      return next;
+    });
+  }, []);
 
-  const updateOption = (qIndex: number, oIndex: number, value: string) => {
-    const newQuestions = [...editingQuestions];
-    const newOptions = [...(newQuestions[qIndex].options || [])];
-    newOptions[oIndex] = value;
-    newQuestions[qIndex] = { ...newQuestions[qIndex], options: newOptions };
-    setEditingQuestions(newQuestions);
-  };
+  const updateOption = useCallback((qIndex: number, oIndex: number, value: string) => {
+    setEditingQuestions(prev => {
+      const next = [...prev];
+      const nextOptions = [...(next[qIndex].options || [])];
+      nextOptions[oIndex] = value;
+      next[qIndex] = { ...next[qIndex], options: nextOptions };
+      return next;
+    });
+  }, []);
+
+  const toggleExpand = useCallback((index: number) => {
+    setExpandedQuestions(prev => ({
+      ...prev,
+      [index]: !prev[index]
+    }));
+  }, []);
 
   return (
     <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
@@ -462,6 +737,13 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
                   </td>
                   <td className="px-6 py-4 text-right">
                     <div className="flex items-center justify-end gap-2">
+                      <button 
+                        onClick={() => handleExportResults(quiz)}
+                        title="Xuất kết quả thi (Excel)"
+                        className="p-2 text-stone-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors"
+                      >
+                        <FileSpreadsheet className="w-4 h-4" />
+                      </button>
                       <button 
                         onClick={() => handleExportQuiz(quiz)}
                         title="Xuất đề thi (JSON)"
@@ -598,6 +880,32 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
                     <label htmlFor="isActive" className="text-sm font-medium text-stone-700">Công khai bài thi</label>
                   </div>
                 </div>
+
+                <div className="space-y-4">
+                  <label className="text-sm font-medium text-stone-700 block">Vai trò được phép tham gia thi</label>
+                  <div className="flex flex-wrap gap-6">
+                    {['student', 'guest'].map((role) => (
+                      <div key={role} className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          id={`role-${role}`}
+                          checked={editingQuiz?.allowedRoles?.includes(role as any) ?? true}
+                          onChange={(e) => {
+                            const currentRoles = editingQuiz?.allowedRoles || ['student', 'guest'];
+                            const newRoles = e.target.checked 
+                              ? [...currentRoles, role as any]
+                              : currentRoles.filter(r => r !== role);
+                            setEditingQuiz({ ...editingQuiz, allowedRoles: newRoles });
+                          }}
+                          className="w-5 h-5 rounded border-stone-300 text-emerald-600 focus:ring-emerald-500"
+                        />
+                        <label htmlFor={`role-${role}`} className="text-sm text-stone-600 capitalize">
+                          {role === 'student' ? 'Học sinh' : 'Khách'}
+                        </label>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </section>
 
               {/* Questions */}
@@ -614,155 +922,18 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
                   </button>
                 </div>
 
-                <div className="space-y-8">
+                <div className="space-y-4">
                   {editingQuestions.map((q, qIndex) => (
-                    <div key={qIndex} className="p-6 bg-stone-50 rounded-2xl border border-stone-200 relative group">
-                      <button
-                        onClick={() => removeQuestion(qIndex)}
-                        className="absolute -top-2 -right-2 w-8 h-8 bg-white border border-stone-200 text-stone-400 hover:text-red-600 rounded-full flex items-center justify-center shadow-sm opacity-0 group-hover:opacity-100 transition-all"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-
-                      <div className="space-y-4">
-                        <div className="flex flex-col sm:flex-row gap-4">
-                          <div className="flex-grow space-y-2">
-                            <label className="text-xs font-bold text-stone-400 uppercase">Loại câu hỏi</label>
-                            <select
-                              value={q.type || 'multiple_choice'}
-                              onChange={(e) => {
-                                const type = e.target.value as QuestionType;
-                                const newQuestions = [...editingQuestions];
-                                newQuestions[qIndex] = { 
-                                  ...newQuestions[qIndex], 
-                                  type,
-                                  options: ['', '', '', ''],
-                                  correctOptionIndex: type === 'multiple_choice' ? 0 : undefined,
-                                  correctAnswers: type === 'true_false' ? [true, true, true, true] : undefined
-                                };
-                                setEditingQuestions(newQuestions);
-                              }}
-                              className="w-full px-4 py-2 bg-white border border-stone-200 rounded-lg focus:outline-none focus:border-emerald-500 transition-all"
-                            >
-                              <option value="multiple_choice">Nhiều lựa chọn</option>
-                              <option value="true_false">Đúng / Sai</option>
-                            </select>
-                          </div>
-                          <div className="flex-grow-[2] space-y-2">
-                            <label className="text-xs font-bold text-stone-400 uppercase">Nội dung câu hỏi {qIndex + 1}</label>
-                            <div className="bg-white rounded-xl overflow-hidden">
-                              <ReactQuill
-                                theme="snow"
-                                value={q.text || ''}
-                                onChange={(val) => updateQuestion(qIndex, 'text', val)}
-                                modules={{
-                                  toolbar: [
-                                    [{ 'header': [1, 2, false] }],
-                                    ['bold', 'italic', 'underline', 'strike'],
-                                    [{ 'list': 'ordered' }, { 'list': 'bullet' }],
-                                    ['link', 'image', 'video'],
-                                    ['clean']
-                                  ],
-                                }}
-                                placeholder="Nhập nội dung câu hỏi (có thể chèn bảng, hình ảnh)..."
-                              />
-                            </div>
-                          </div>
-                        </div>
-
-                        {q.type === 'multiple_choice' ? (
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            {q.options?.map((opt, oIndex) => (
-                              <div key={oIndex} className="flex items-center gap-3">
-                                <input
-                                  type="radio"
-                                  name={`correct-${qIndex}`}
-                                  checked={q.correctOptionIndex === oIndex}
-                                  onChange={() => updateQuestion(qIndex, 'correctOptionIndex', oIndex)}
-                                  className="w-4 h-4 text-emerald-600 focus:ring-emerald-500"
-                                />
-                                <input
-                                  type="text"
-                                  value={opt}
-                                  onChange={(e) => updateOption(qIndex, oIndex, e.target.value)}
-                                  className={cn(
-                                    "flex-grow px-4 py-2 bg-white border rounded-lg focus:outline-none transition-all",
-                                    q.correctOptionIndex === oIndex ? "border-emerald-500 ring-1 ring-emerald-500/20" : "border-stone-200"
-                                  )}
-                                  placeholder={`Lựa chọn ${oIndex + 1}`}
-                                />
-                              </div>
-                            ))}
-                          </div>
-                        ) : (
-                          <div className="space-y-4">
-                            <p className="text-xs font-bold text-stone-400 uppercase">Các ý (a, b, c, d) - Chọn Đúng hoặc Sai</p>
-                            {['a', 'b', 'c', 'd'].map((label, oIndex) => (
-                              <div key={oIndex} className="flex flex-col sm:flex-row sm:items-center gap-4 p-4 bg-white border border-stone-100 rounded-xl">
-                                <div className="flex items-center gap-3 flex-grow">
-                                  <span className="font-bold text-emerald-600 w-6">{label}.</span>
-                                  <input
-                                    type="text"
-                                    value={q.options?.[oIndex] || ''}
-                                    onChange={(e) => updateOption(qIndex, oIndex, e.target.value)}
-                                    className="flex-grow px-4 py-2 bg-stone-50 border border-stone-200 rounded-lg focus:outline-none focus:border-emerald-500 transition-all"
-                                    placeholder={`Nội dung ý ${label}...`}
-                                  />
-                                </div>
-                                <div className="flex items-center gap-4 bg-stone-100 p-1 rounded-lg">
-                                  <button
-                                    onClick={() => {
-                                      const newCorrect = [...(q.correctAnswers || [true, true, true, true])];
-                                      newCorrect[oIndex] = true;
-                                      updateQuestion(qIndex, 'correctAnswers', newCorrect);
-                                    }}
-                                    className={cn(
-                                      "px-4 py-1.5 rounded-md text-xs font-bold transition-all",
-                                      q.correctAnswers?.[oIndex] === true ? "bg-emerald-600 text-white shadow-sm" : "text-stone-500 hover:text-stone-700"
-                                    )}
-                                  >
-                                    Đúng
-                                  </button>
-                                  <button
-                                    onClick={() => {
-                                      const newCorrect = [...(q.correctAnswers || [true, true, true, true])];
-                                      newCorrect[oIndex] = false;
-                                      updateQuestion(qIndex, 'correctAnswers', newCorrect);
-                                    }}
-                                    className={cn(
-                                      "px-4 py-1.5 rounded-md text-xs font-bold transition-all",
-                                      q.correctAnswers?.[oIndex] === false ? "bg-red-600 text-white shadow-sm" : "text-stone-500 hover:text-stone-700"
-                                    )}
-                                  >
-                                    Sai
-                                  </button>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-
-                        <div className="space-y-2">
-                          <label className="text-xs font-bold text-stone-400 uppercase">Giải thích (không bắt buộc)</label>
-                          <div className="bg-white rounded-xl overflow-hidden">
-                            <ReactQuill
-                              theme="snow"
-                              value={q.explanation || ''}
-                              onChange={(val) => updateQuestion(qIndex, 'explanation', val)}
-                              modules={{
-                                toolbar: [
-                                  ['bold', 'italic', 'underline'],
-                                  [{ 'list': 'ordered' }, { 'list': 'bullet' }],
-                                  ['link', 'image'],
-                                  ['clean']
-                                ],
-                              }}
-                              placeholder="Giải thích tại sao đáp án này đúng..."
-                            />
-                          </div>
-                        </div>
-                      </div>
-                    </div>
+                    <QuestionEditor
+                      key={qIndex}
+                      q={q}
+                      qIndex={qIndex}
+                      onUpdate={updateQuestion}
+                      onUpdateOption={updateOption}
+                      onRemove={removeQuestion}
+                      isExpanded={!!expandedQuestions[qIndex]}
+                      onToggleExpand={toggleExpand}
+                    />
                   ))}
                 </div>
               </section>
