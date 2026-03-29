@@ -1,14 +1,19 @@
 import React, { useState, useEffect, useCallback, memo } from 'react';
 import ReactQuill from 'react-quill-new';
 import * as XLSX from 'xlsx';
-import { collection, onSnapshot, query, orderBy, addDoc, serverTimestamp, updateDoc, doc, deleteDoc, getDocs, writeBatch, deleteField, where, setDoc } from 'firebase/firestore';
+import { Document, Packer, Paragraph, TextRun, AlignmentType, HeadingLevel } from 'docx';
+import { saveAs } from 'file-saver';
+import { collection, onSnapshot, query, orderBy, addDoc, serverTimestamp, updateDoc, doc, deleteDoc, getDocs, writeBatch, deleteField, where } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
-import { Quiz, Question, User, QuestionType } from '../types';
-import { Plus, Trash2, Edit, ChevronRight, Clock, CheckCircle2, XCircle, AlertCircle, Loader2, Save, X, List, PlusCircle, Upload, Download, FileSpreadsheet, ChevronDown, ChevronUp } from 'lucide-react';
+import { Quiz, Question, User, QuestionType, Result, SpecialAttemptLimit } from '../types';
+import { Plus, Trash2, Edit, ChevronRight, Clock, CheckCircle2, XCircle, AlertCircle, Loader2, Save, X, List, PlusCircle, Upload, Download, FileSpreadsheet, ChevronDown, ChevronUp, BarChart3, UserPlus, Users, GripVertical, Eye, EyeOff } from 'lucide-react';
 import { formatDuration, formatDate, cn } from '../lib/utils';
+import { DragDropContext, Droppable, Draggable, DropResult } from '@hello-pangea/dnd';
 import ImportQuizModal from '../components/ImportQuizModal';
+import RichText from '../components/RichText';
 import { ImportedQuiz, downloadFile } from '../lib/importUtils';
 import DOMPurify from 'dompurify';
+import { toast } from 'sonner';
 
 interface AdminDashboardProps {
   user: User;
@@ -22,7 +27,8 @@ const QuestionEditor = memo(({
   onUpdateOption, 
   onRemove,
   isExpanded,
-  onToggleExpand
+  onToggleExpand,
+  dragHandleProps
 }: { 
   q: Partial<Question>; 
   qIndex: number; 
@@ -31,30 +37,56 @@ const QuestionEditor = memo(({
   onRemove: (index: number) => void;
   isExpanded: boolean;
   onToggleExpand: (index: number) => void;
+  dragHandleProps?: any;
 }) => {
   return (
     <div className={cn(
       "p-6 bg-stone-50 rounded-2xl border transition-all duration-200 relative group",
-      isExpanded ? "border-emerald-200 shadow-md ring-1 ring-emerald-100" : "border-stone-200 hover:border-stone-300"
+      isExpanded ? "border-emerald-200 shadow-md ring-1 ring-emerald-100" : "border-stone-200 hover:border-stone-300",
+      q.hidden && "opacity-60 grayscale-[0.5]"
     )}>
       <div className="flex items-center justify-between gap-4 mb-2">
-        <div className="flex items-center gap-3 cursor-pointer flex-1 min-w-0" onClick={() => onToggleExpand(qIndex)}>
-          <div className="w-8 h-8 rounded-full bg-stone-200 flex items-center justify-center text-xs font-bold text-stone-600 shrink-0">
-            {qIndex + 1}
+        <div className="flex items-center gap-3 flex-1 min-w-0">
+          <div 
+            {...dragHandleProps}
+            className="p-1 text-stone-400 hover:text-stone-600 cursor-grab active:cursor-grabbing"
+          >
+            <GripVertical className="w-5 h-5" />
           </div>
-          <div className="flex-1 min-w-0">
-            {!isExpanded ? (
-              <div 
-                className="text-sm text-stone-600 truncate font-medium"
-                dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(q.text || 'Câu hỏi chưa có nội dung...') }}
-              />
-            ) : (
-              <span className="text-sm font-bold text-stone-400 uppercase tracking-wider">Đang chỉnh sửa câu hỏi {qIndex + 1}</span>
-            )}
+          <div className="flex items-center gap-3 cursor-pointer flex-1 min-w-0" onClick={() => onToggleExpand(qIndex)}>
+            <div className="w-8 h-8 rounded-full bg-stone-200 flex items-center justify-center text-xs font-bold text-stone-600 shrink-0">
+              {qIndex + 1}
+            </div>
+            <div className="flex-1 min-w-0">
+              {!isExpanded ? (
+                <div className="flex items-center gap-2">
+                  <RichText 
+                    className="text-sm text-stone-600 truncate font-medium max-h-10 overflow-hidden"
+                    content={q.text || 'Câu hỏi chưa có nội dung...'}
+                  />
+                  {q.hidden && <span className="text-[10px] font-bold uppercase bg-stone-200 text-stone-500 px-1.5 py-0.5 rounded">Đã ẩn</span>}
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-bold text-stone-400 uppercase tracking-wider">Đang chỉnh sửa câu hỏi {qIndex + 1}</span>
+                  {q.hidden && <span className="text-[10px] font-bold uppercase bg-stone-200 text-stone-500 px-1.5 py-0.5 rounded">Đã ẩn</span>}
+                </div>
+              )}
+            </div>
           </div>
         </div>
         
         <div className="flex items-center gap-1 shrink-0">
+          <button
+            onClick={() => onUpdate(qIndex, 'hidden', !q.hidden)}
+            className={cn(
+              "p-2 rounded-lg transition-all",
+              q.hidden ? "text-amber-600 bg-amber-50 hover:bg-amber-100" : "text-stone-400 hover:text-stone-600 hover:bg-white"
+            )}
+            title={q.hidden ? "Hiện câu hỏi" : "Ẩn câu hỏi"}
+          >
+            {q.hidden ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+          </button>
           <button
             onClick={() => onToggleExpand(qIndex)}
             className="p-2 text-stone-400 hover:text-stone-600 hover:bg-white rounded-lg transition-all"
@@ -125,20 +157,27 @@ const QuestionEditor = memo(({
                     onChange={() => onUpdate(qIndex, 'correctOptionIndex', oIndex)}
                     className="w-4 h-4 text-emerald-600 focus:ring-emerald-500"
                   />
-                  <input
-                    type="text"
-                    value={opt || ''}
-                    onChange={(e) => onUpdateOption(qIndex, oIndex, e.target.value)}
-                    className="flex-grow min-w-0 px-4 py-3 bg-white border border-stone-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
-                    placeholder={`Lựa chọn ${oIndex + 1}`}
-                  />
+                  <div className="flex-grow min-w-0 bg-white rounded-xl overflow-hidden border border-stone-200">
+                    <ReactQuill
+                      theme="snow"
+                      value={opt || ''}
+                      onChange={(val) => onUpdateOption(qIndex, oIndex, val)}
+                      modules={{
+                        toolbar: [
+                          ['bold', 'italic', 'underline'],
+                          ['image', 'clean']
+                        ],
+                      }}
+                      placeholder={`Lựa chọn ${oIndex + 1}`}
+                    />
+                  </div>
                 </div>
               ))}
             </div>
           ) : (
             <div className="space-y-4">
-              <p className="text-xs font-bold text-stone-400 uppercase">Các ý (a, b, c, d) - Chọn Đúng hoặc Sai</p>
-              {['a', 'b', 'c', 'd'].map((label, oIndex) => (
+              <p className="text-xs font-bold text-stone-400 uppercase">Các ý (A, B, C, D) - Chọn Đúng hoặc Sai</p>
+              {['A', 'B', 'C', 'D'].map((label, oIndex) => (
                 <div key={oIndex} className="flex flex-col sm:flex-row sm:items-start gap-4 p-4 bg-white border border-stone-100 rounded-xl">
                   <div className="flex items-start gap-3 flex-grow min-w-0">
                     <span className="font-bold text-emerald-600 w-6 mt-2">{label}.</span>
@@ -217,6 +256,102 @@ const QuestionEditor = memo(({
   );
 });
 
+const QuizStatsModal = ({ quiz, onClose }: { quiz: Quiz; onClose: () => void }) => {
+  const [stats, setStats] = useState<{ questionId: string; text: string; wrongCount: number; totalCount: number }[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchStats = async () => {
+      try {
+        const resultsQ = query(collection(db, 'results'), where('quizId', '==', quiz.id));
+        const resultsSnapshot = await getDocs(resultsQ);
+        const results = resultsSnapshot.docs.map(doc => doc.data() as Result);
+
+        const questionsSnapshot = await getDocs(query(collection(db, 'quizzes', quiz.id, 'questions'), orderBy('order')));
+        const questions = questionsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Question));
+
+        const questionStats: Record<string, { wrong: number; total: number }> = {};
+        
+        results.forEach(result => {
+          if (result.answers && Array.isArray(result.answers)) {
+            result.answers.forEach(ans => {
+              if (ans.questionId) {
+                if (!questionStats[ans.questionId]) {
+                  questionStats[ans.questionId] = { wrong: 0, total: 0 };
+                }
+                questionStats[ans.questionId].total++;
+                if (!ans.isCorrect) {
+                  questionStats[ans.questionId].wrong++;
+                }
+              }
+            });
+          }
+        });
+
+        const sortedStats = questions.map(q => ({
+          questionId: q.id,
+          text: q.text,
+          wrongCount: questionStats[q.id]?.wrong || 0,
+          totalCount: questionStats[q.id]?.total || 0
+        })).sort((a, b) => b.wrongCount - a.wrongCount);
+
+        setStats(sortedStats);
+      } catch (error) {
+        console.error('Error fetching stats:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchStats();
+  }, [quiz.id]);
+
+  return (
+    <div className="fixed inset-0 z-[110] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-stone-900/40 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-white w-full max-w-4xl max-h-[80vh] rounded-3xl shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-200">
+        <div className="px-8 py-6 border-b border-stone-100 flex items-center justify-between bg-stone-50/50">
+          <h2 className="text-2xl font-serif italic font-medium">Thống kê câu hỏi hay sai: {quiz.title}</h2>
+          <button onClick={onClose} className="p-2 text-stone-400 hover:text-stone-900 rounded-full hover:bg-stone-100 transition-colors">
+            <X className="w-6 h-6" />
+          </button>
+        </div>
+        <div className="flex-grow overflow-y-auto p-8">
+          {loading ? (
+            <div className="flex justify-center py-20"><Loader2 className="w-10 h-10 animate-spin text-stone-300" /></div>
+          ) : stats.length > 0 ? (
+            <div className="space-y-4">
+              {stats.map((s, i) => (
+                <div key={s.questionId} className="p-4 bg-stone-50 rounded-2xl border border-stone-200 flex items-start gap-4">
+                  <div className="w-8 h-8 rounded-full bg-stone-200 flex items-center justify-center text-xs font-bold text-stone-600 shrink-0">
+                    {i + 1}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <RichText className="text-sm text-stone-800 mb-2" content={s.text} />
+                    <div className="flex items-center gap-4">
+                      <div className="flex items-center gap-1 text-xs font-medium text-red-600 bg-red-50 px-2 py-1 rounded">
+                        <XCircle className="w-3 h-3" /> Sai: {s.wrongCount}
+                      </div>
+                      <div className="flex items-center gap-1 text-xs font-medium text-stone-500 bg-stone-100 px-2 py-1 rounded">
+                        <CheckCircle2 className="w-3 h-3" /> Tổng lượt: {s.totalCount}
+                      </div>
+                      <div className="text-xs font-bold text-stone-400">
+                        Tỷ lệ sai: {s.totalCount > 0 ? Math.round((s.wrongCount / s.totalCount) * 100) : 0}%
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-center py-20 text-stone-400 italic">Chưa có dữ liệu thống kê cho bài thi này.</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 export default function AdminDashboard({ user }: AdminDashboardProps) {
   const [quizzes, setQuizzes] = useState<Quiz[]>([]);
   const [loading, setLoading] = useState(true);
@@ -229,7 +364,9 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
   const [filterSubject, setFilterSubject] = useState<string>('all');
   const [filterTopic, setFilterTopic] = useState<string>('all');
   const [expandedQuestions, setExpandedQuestions] = useState<Record<number, boolean>>({ 0: true });
-  const [isRegistrationEnabled, setIsRegistrationEnabled] = useState(true);
+  const [statsQuiz, setStatsQuiz] = useState<Quiz | null>(null);
+  const [allUsers, setAllUsers] = useState<User[]>([]);
+  const [availableClasses, setAvailableClasses] = useState<string[]>([]);
 
   const subjects = ['Toán', 'Vật lý', 'Hóa học', 'Sinh học', 'Tiếng Anh', 'Lịch sử', 'Địa lý', 'GDCD', 'Ngữ văn', 'Tin học'];
   const topics = [
@@ -245,32 +382,47 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
         id: doc.id,
         ...doc.data()
       })) as Quiz[];
-      setQuizzes(quizList);
+      
+      // Sort by order, then by createdAt
+      const sortedQuizzes = quizList.sort((a, b) => {
+        if (a.order !== undefined && b.order !== undefined) {
+          return a.order - b.order;
+        }
+        if (a.order !== undefined) return -1;
+        if (b.order !== undefined) return 1;
+        
+        const dateA = (a.createdAt as any)?.toDate?.() || new Date(0);
+        const dateB = (b.createdAt as any)?.toDate?.() || new Date(0);
+        return dateB.getTime() - dateA.getTime();
+      });
+
+      setQuizzes(sortedQuizzes);
+      setLoading(false);
+    }, (error) => {
+      console.error("Error listening to quizzes:", error);
       setLoading(false);
     });
 
-    // Lấy cài đặt đăng ký
-    const settingsUnsubscribe = onSnapshot(doc(db, 'settings', 'registration'), (doc) => {
-      if (doc.exists()) {
-        setIsRegistrationEnabled(doc.data().enabled);
-      }
-    });
-
-    return () => {
-      unsubscribe();
-      settingsUnsubscribe();
-    };
+    return () => unsubscribe();
   }, []);
 
-  const toggleRegistration = async () => {
-    try {
-      await setDoc(doc(db, 'settings', 'registration'), { enabled: !isRegistrationEnabled }, { merge: true });
-      setIsRegistrationEnabled(!isRegistrationEnabled);
-    } catch (error) {
-      console.error('Error toggling registration:', error);
-      alert('Có lỗi xảy ra khi cập nhật cài đặt.');
-    }
-  };
+  useEffect(() => {
+    const q = query(collection(db, 'users'), orderBy('displayName', 'asc'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const userList = snapshot.docs.map(doc => ({
+        uid: doc.id,
+        ...doc.data()
+      })) as User[];
+      setAllUsers(userList);
+      
+      const classes = Array.from(new Set(userList.map(u => u.class).filter(Boolean))) as string[];
+      setAvailableClasses(classes.sort());
+    }, (error) => {
+      console.error("Error listening to users:", error);
+    });
+
+    return () => unsubscribe();
+  }, []);
 
   const filteredQuizzes = quizzes.filter(quiz => {
     const matchSubject = filterSubject === 'all' || quiz.subject === filterSubject;
@@ -291,6 +443,25 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
     setExpandedQuestions({ 0: true }); // Expand first question by default
     setSaving(false);
     setIsModalOpen(true);
+  };
+
+  const handleDragEnd = (result: DropResult) => {
+    if (!result.destination) return;
+
+    const items = Array.from(editingQuestions);
+    const [reorderedItem] = items.splice(result.source.index, 1);
+    items.splice(result.destination.index, 0, reorderedItem);
+
+    // Update order field for all items
+    const updatedItems = items.map((item, index) => ({
+      ...item,
+      order: index
+    }));
+
+    setEditingQuestions(updatedItems);
+    
+    // Clear expanded states as they might be confusing after reorder
+    setExpandedQuestions({});
   };
 
   const handleCreateNew = () => {
@@ -323,6 +494,8 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
       subject: imported.subject,
       topic: imported.topic,
       duration: imported.duration,
+      maxAttempts: imported.maxAttempts ?? 1,
+      specialAttemptLimits: imported.specialAttemptLimits || [],
       isActive: true
     });
     setEditingQuestions(imported.questions.map((q, index) => {
@@ -364,6 +537,8 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
         subject: quiz.subject,
         topic: quiz.topic,
         duration: quiz.duration,
+        maxAttempts: quiz.maxAttempts,
+        specialAttemptLimits: quiz.specialAttemptLimits || [],
         questions
       };
 
@@ -446,6 +621,18 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
       return;
     }
 
+    // Check for duplicate title (if it's a new quiz or title changed)
+    const isNewQuiz = !editingQuiz.id;
+    const titleChanged = !isNewQuiz && editingQuiz.title !== quizzes.find(q => q.id === editingQuiz.id)?.title;
+
+    if (isNewQuiz || titleChanged) {
+      const duplicate = quizzes.find(q => q.title.trim().toLowerCase() === editingQuiz.title.trim().toLowerCase() && q.id !== editingQuiz.id);
+      if (duplicate) {
+        alert('Tên bài thi đã tồn tại. Vui lòng chọn tên khác.');
+        return;
+      }
+    }
+
     setSaving(true);
     try {
       let quizId = editingQuiz.id;
@@ -457,7 +644,9 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
         duration: Number(editingQuiz.duration),
         maxAttempts: Number(editingQuiz.maxAttempts || 0),
         isActive: editingQuiz.isActive ?? true,
-        allowedRoles: editingQuiz.allowedRoles || ['student', 'guest'],
+        allowedRoles: editingQuiz.allowedRoles || ['student', 'student-vip', 'guest'],
+        reviewRoles: editingQuiz.reviewRoles || ['student', 'student-vip', 'guest'],
+        specialAttemptLimits: editingQuiz.specialAttemptLimits || [],
         updatedAt: serverTimestamp()
       };
 
@@ -496,6 +685,7 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
           text: q.text,
           explanation: q.explanation || '',
           order: i, // Use the current index in validQuestions to preserve order
+          hidden: q.hidden || false,
           updatedAt: serverTimestamp()
         };
 
@@ -592,9 +782,112 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
     }
   };
 
+  const handleDownloadSample = async () => {
+    try {
+      const doc = new Document({
+        sections: [{
+          properties: {},
+          children: [
+            new Paragraph({
+              text: "Tiêu đề: Đề thi mẫu THPT",
+              heading: HeadingLevel.HEADING_1,
+              alignment: AlignmentType.CENTER,
+            }),
+            new Paragraph({
+              text: "Môn: Toán",
+              alignment: AlignmentType.CENTER,
+            }),
+            new Paragraph({
+              text: "Thời gian: 90",
+              alignment: AlignmentType.CENTER,
+            }),
+            new Paragraph({
+              text: "Chủ đề: regular",
+              alignment: AlignmentType.CENTER,
+            }),
+            new Paragraph({ text: "" }),
+            new Paragraph({
+              children: [
+                new TextRun({ text: "Phần I. Câu hỏi nhiều lựa chọn", bold: true }),
+              ],
+            }),
+            new Paragraph({
+              text: "Câu 1. Nội dung câu hỏi trắc nghiệm...",
+            }),
+            new Paragraph({ text: "A. Phương án A" }),
+            new Paragraph({ text: "B. Phương án B" }),
+            new Paragraph({ text: "C. Phương án C" }),
+            new Paragraph({ text: "D. Phương án D" }),
+            new Paragraph({
+              children: [
+                new TextRun({ text: "Đáp án: ", bold: true }),
+                new TextRun("A"),
+              ],
+            }),
+            new Paragraph({
+              children: [
+                new TextRun({ text: "Giải thích: ", bold: true, italics: true }),
+                new TextRun("Đây là phần giải thích cho câu hỏi trắc nghiệm."),
+              ],
+            }),
+            new Paragraph({ text: "" }),
+            new Paragraph({
+              children: [
+                new TextRun({ text: "Phần II. Câu hỏi đúng sai", bold: true }),
+              ],
+            }),
+            new Paragraph({
+              text: "Câu 1. Nội dung câu hỏi đúng sai...",
+            }),
+            new Paragraph({ text: "a. Ý thứ nhất" }),
+            new Paragraph({ text: "b. Ý thứ hai" }),
+            new Paragraph({ text: "c. Ý thứ ba" }),
+            new Paragraph({ text: "d. Ý thứ tư" }),
+            new Paragraph({
+              children: [
+                new TextRun({ text: "Đáp án: ", bold: true }),
+                new TextRun("Đúng, Sai, Đúng, Đúng"),
+              ],
+            }),
+            new Paragraph({
+              children: [
+                new TextRun({ text: "Giải thích: ", bold: true, italics: true }),
+                new TextRun("Đây là phần giải thích cho câu hỏi đúng sai."),
+              ],
+            }),
+          ],
+        }],
+      });
+
+      const blob = await Packer.toBlob(doc);
+      saveAs(blob, 'Mau_de_thi.docx');
+      toast.success('Đã tải xuống file mẫu định dạng Word (.docx). Bạn có thể soạn thảo tương tự trong file này để nhập vào hệ thống.');
+    } catch (error) {
+      console.error('Error generating Word sample:', error);
+      toast.error('Có lỗi xảy ra khi tạo file mẫu.');
+    }
+  };
+
   const handleDeleteQuiz = async (id: string) => {
-    if (window.confirm('Bạn có chắc chắn muốn xóa bài thi này?')) {
-      await deleteDoc(doc(db, 'quizzes', id));
+    if (!window.confirm('Bạn có chắc chắn muốn xóa bài thi này? Tất cả dữ liệu liên quan sẽ bị mất.')) return;
+    
+    setSaving(true);
+    try {
+      // Delete questions first
+      const questionsSnapshot = await getDocs(collection(db, 'quizzes', id, 'questions'));
+      const batch = writeBatch(db);
+      questionsSnapshot.docs.forEach(d => batch.delete(d.ref));
+      
+      // Delete quiz
+      batch.delete(doc(db, 'quizzes', id));
+      await batch.commit();
+      toast.success('Đã xóa bài thi thành công.');
+    } catch (error) {
+      console.error('Error deleting quiz:', error);
+      handleFirestoreError(error, OperationType.DELETE, 'quizzes');
+      toast.error('Có lỗi xảy ra khi xóa bài thi.');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -655,17 +948,24 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
         
         <div className="flex items-center gap-4">
           <button
-            onClick={() => setIsImportModalOpen(true)}
-            className="flex items-center justify-center gap-2 bg-stone-100 text-stone-600 py-3 px-6 rounded-xl hover:bg-stone-200 transition-all font-medium border border-stone-200"
+            onClick={handleDownloadSample}
+            className="flex items-center justify-center gap-2 bg-white text-emerald-600 py-2 px-4 rounded-lg hover:bg-emerald-50 transition-all font-medium border border-emerald-200 text-sm"
           >
-            <Upload className="w-5 h-5" />
+            <Download className="w-4 h-4" />
+            Tải file mẫu (Word)
+          </button>
+          <button
+            onClick={() => setIsImportModalOpen(true)}
+            className="flex items-center justify-center gap-2 bg-stone-100 text-stone-600 py-2 px-4 rounded-lg hover:bg-stone-200 transition-all font-medium border border-stone-200 text-sm"
+          >
+            <Upload className="w-4 h-4" />
             Nhập đề thi (Word/JSON)
           </button>
           <button
             onClick={handleCreateNew}
-            className="flex items-center justify-center gap-2 bg-emerald-600 text-white py-3 px-6 rounded-xl hover:bg-emerald-700 transition-all font-medium shadow-lg shadow-emerald-200"
+            className="flex items-center justify-center gap-2 bg-emerald-600 text-white py-2 px-4 rounded-lg hover:bg-emerald-700 transition-all font-medium shadow-lg shadow-emerald-200 text-sm"
           >
-            <Plus className="w-5 h-5" />
+            <Plus className="w-4 h-4" />
             Tạo bài thi mới
           </button>
         </div>
@@ -706,23 +1006,6 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
             Xóa lọc
           </button>
         )}
-        <div className="ml-auto flex items-center gap-2">
-          <label className="text-xs font-bold text-stone-400 uppercase tracking-wider">Đăng ký:</label>
-          <button
-            onClick={toggleRegistration}
-            className={cn(
-              "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
-              isRegistrationEnabled ? "bg-emerald-600" : "bg-stone-200"
-            )}
-          >
-            <span
-              className={cn(
-                "inline-block h-4 w-4 transform rounded-full bg-white transition-transform",
-                isRegistrationEnabled ? "translate-x-6" : "translate-x-1"
-              )}
-            />
-          </button>
-        </div>
       </div>
 
       {loading ? (
@@ -775,6 +1058,13 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
                   </td>
                   <td className="px-6 py-4 text-right">
                     <div className="flex items-center justify-end gap-2">
+                      <button 
+                        onClick={() => setStatsQuiz(quiz)}
+                        title="Thống kê câu hỏi hay sai"
+                        className="p-2 text-stone-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors"
+                      >
+                        <BarChart3 className="w-4 h-4" />
+                      </button>
                       <button 
                         onClick={() => handleExportResults(quiz)}
                         title="Xuất kết quả thi (Excel)"
@@ -898,6 +1188,105 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
                       placeholder="VD: 1"
                     />
                   </div>
+
+                  {/* Special Attempt Limits */}
+                  <div className="md:col-span-2 p-6 bg-stone-50 rounded-2xl border border-stone-200 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-sm font-bold text-stone-900 flex items-center gap-2">
+                        <Users className="w-4 h-4" /> Cấu hình lượt thi đặc biệt (Lớp/Học sinh)
+                      </h4>
+                      <button
+                        onClick={() => {
+                          const currentLimits = editingQuiz?.specialAttemptLimits || [];
+                          setEditingQuiz({
+                            ...editingQuiz,
+                            specialAttemptLimits: [...currentLimits, { type: 'class', targetId: '', maxAttempts: 1 }]
+                          });
+                        }}
+                        className="text-xs font-bold text-emerald-600 hover:text-emerald-700 flex items-center gap-1"
+                      >
+                        <Plus className="w-3 h-3" /> Thêm cấu hình
+                      </button>
+                    </div>
+                    
+                    {editingQuiz?.specialAttemptLimits && editingQuiz.specialAttemptLimits.length > 0 ? (
+                      <div className="space-y-3">
+                        {editingQuiz.specialAttemptLimits.map((limit, idx) => (
+                          <div key={idx} className="flex flex-col sm:flex-row items-center gap-3 bg-white p-3 rounded-xl border border-stone-100">
+                            <select
+                              value={limit.type}
+                              onChange={(e) => {
+                                const newLimits = [...editingQuiz.specialAttemptLimits!];
+                                newLimits[idx] = { ...limit, type: e.target.value as any };
+                                setEditingQuiz({ ...editingQuiz, specialAttemptLimits: newLimits });
+                              }}
+                              className="w-full sm:w-32 px-3 py-1.5 bg-stone-50 border border-stone-200 rounded-lg text-xs"
+                            >
+                              <option value="class">Lớp</option>
+                              <option value="student">Học sinh</option>
+                            </select>
+                            {limit.type === 'class' ? (
+                              <select
+                                value={limit.targetId}
+                                onChange={(e) => {
+                                  const newLimits = [...editingQuiz.specialAttemptLimits!];
+                                  newLimits[idx] = { ...limit, targetId: e.target.value };
+                                  setEditingQuiz({ ...editingQuiz, specialAttemptLimits: newLimits });
+                                }}
+                                className="flex-1 px-3 py-1.5 bg-stone-50 border border-stone-200 rounded-lg text-xs"
+                              >
+                                <option value="">Chọn lớp...</option>
+                                {availableClasses.map(c => (
+                                  <option key={c} value={c}>{c}</option>
+                                ))}
+                              </select>
+                            ) : (
+                              <select
+                                value={limit.targetId}
+                                onChange={(e) => {
+                                  const newLimits = [...editingQuiz.specialAttemptLimits!];
+                                  newLimits[idx] = { ...limit, targetId: e.target.value };
+                                  setEditingQuiz({ ...editingQuiz, specialAttemptLimits: newLimits });
+                                }}
+                                className="flex-1 px-3 py-1.5 bg-stone-50 border border-stone-200 rounded-lg text-xs"
+                              >
+                                <option value="">Chọn học sinh...</option>
+                                {allUsers.filter(u => u.role !== 'admin').map(u => (
+                                  <option key={u.uid} value={u.uid}>
+                                    {u.displayName || u.email.split('@')[0]} ({u.class || 'N/A'})
+                                  </option>
+                                ))}
+                              </select>
+                            )}
+                            <div className="flex items-center gap-2 shrink-0">
+                              <label className="text-[10px] font-bold text-stone-400 uppercase">Lượt:</label>
+                              <input
+                                type="number"
+                                value={limit.maxAttempts}
+                                onChange={(e) => {
+                                  const newLimits = [...editingQuiz.specialAttemptLimits!];
+                                  newLimits[idx] = { ...limit, maxAttempts: Number(e.target.value) };
+                                  setEditingQuiz({ ...editingQuiz, specialAttemptLimits: newLimits });
+                                }}
+                                className="w-16 px-3 py-1.5 bg-stone-50 border border-stone-200 rounded-lg text-xs"
+                              />
+                            </div>
+                            <button
+                              onClick={() => {
+                                const newLimits = editingQuiz.specialAttemptLimits!.filter((_, i) => i !== idx);
+                                setEditingQuiz({ ...editingQuiz, specialAttemptLimits: newLimits });
+                              }}
+                              className="p-1.5 text-stone-400 hover:text-red-600 transition-colors"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-stone-400 italic">Chưa có cấu hình đặc biệt nào.</p>
+                    )}
+                  </div>
                   <div className="md:col-span-2 space-y-2">
                     <label className="text-sm font-medium text-stone-700">Mô tả bài thi</label>
                     <textarea
@@ -922,14 +1311,14 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
                 <div className="space-y-4">
                   <label className="text-sm font-medium text-stone-700 block">Vai trò được phép tham gia thi</label>
                   <div className="flex flex-wrap gap-6">
-                    {['student', 'guest'].map((role) => (
+                    {['student', 'student-vip', 'guest'].map((role) => (
                       <div key={role} className="flex items-center gap-2">
                         <input
                           type="checkbox"
                           id={`role-${role}`}
                           checked={editingQuiz?.allowedRoles?.includes(role as any) ?? true}
                           onChange={(e) => {
-                            const currentRoles = editingQuiz?.allowedRoles || ['student', 'guest'];
+                            const currentRoles = editingQuiz?.allowedRoles || ['student', 'student-vip', 'guest'];
                             const newRoles = e.target.checked 
                               ? [...currentRoles, role as any]
                               : currentRoles.filter(r => r !== role);
@@ -938,7 +1327,33 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
                           className="w-5 h-5 rounded border-stone-300 text-emerald-600 focus:ring-emerald-500"
                         />
                         <label htmlFor={`role-${role}`} className="text-sm text-stone-600 capitalize">
-                          {role === 'student' ? 'Học sinh' : 'Khách'}
+                          {role === 'student' ? 'Học sinh' : role === 'student-vip' ? 'Học sinh-VIP' : 'Khách'}
+                        </label>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <label className="text-sm font-medium text-stone-700 block">Vai trò được phép xem lại bài thi</label>
+                  <div className="flex flex-wrap gap-6">
+                    {['student', 'student-vip', 'guest'].map((role) => (
+                      <div key={`review-${role}`} className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          id={`review-role-${role}`}
+                          checked={editingQuiz?.reviewRoles?.includes(role as any) ?? true}
+                          onChange={(e) => {
+                            const currentRoles = editingQuiz?.reviewRoles || ['student', 'student-vip', 'guest'];
+                            const newRoles = e.target.checked 
+                              ? [...currentRoles, role as any]
+                              : currentRoles.filter(r => r !== role);
+                            setEditingQuiz({ ...editingQuiz, reviewRoles: newRoles });
+                          }}
+                          className="w-5 h-5 rounded border-stone-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <label htmlFor={`review-role-${role}`} className="text-sm text-stone-600 capitalize">
+                          {role === 'student' ? 'Học sinh' : role === 'student-vip' ? 'Học sinh-VIP' : 'Khách'}
                         </label>
                       </div>
                     ))}
@@ -961,18 +1376,36 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
                 </div>
 
                 <div className="space-y-4">
-                  {editingQuestions.map((q, qIndex) => (
-                    <QuestionEditor
-                      key={qIndex}
-                      q={q}
-                      qIndex={qIndex}
-                      onUpdate={updateQuestion}
-                      onUpdateOption={updateOption}
-                      onRemove={removeQuestion}
-                      isExpanded={!!expandedQuestions[qIndex]}
-                      onToggleExpand={toggleExpand}
-                    />
-                  ))}
+                  <DragDropContext onDragEnd={handleDragEnd}>
+                    <Droppable droppableId="questions">
+                      {(provided) => (
+                        <div {...provided.droppableProps} ref={provided.innerRef} className="space-y-4">
+                          {editingQuestions.map((q, qIndex) => (
+                            <Draggable key={qIndex} draggableId={`q-${qIndex}`} index={qIndex}>
+                              {(provided) => (
+                                <div
+                                  ref={provided.innerRef}
+                                  {...provided.draggableProps}
+                                >
+                                  <QuestionEditor
+                                    q={q}
+                                    qIndex={qIndex}
+                                    onUpdate={updateQuestion}
+                                    onUpdateOption={updateOption}
+                                    onRemove={removeQuestion}
+                                    isExpanded={!!expandedQuestions[qIndex]}
+                                    onToggleExpand={toggleExpand}
+                                    dragHandleProps={provided.dragHandleProps}
+                                  />
+                                </div>
+                              )}
+                            </Draggable>
+                          ))}
+                          {provided.placeholder}
+                        </div>
+                      )}
+                    </Droppable>
+                  </DragDropContext>
                 </div>
               </section>
             </div>
@@ -996,6 +1429,12 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
             </div>
           </div>
         </div>
+      )}
+      {statsQuiz && (
+        <QuizStatsModal 
+          quiz={statsQuiz} 
+          onClose={() => setStatsQuiz(null)} 
+        />
       )}
     </div>
   );

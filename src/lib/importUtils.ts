@@ -1,5 +1,5 @@
 import * as mammoth from 'mammoth';
-import { Question, QuestionType, QuizTopic } from '../types';
+import { Question, QuestionType, QuizTopic, SpecialAttemptLimit } from '../types';
 
 export interface ImportedQuiz {
   title: string;
@@ -7,6 +7,8 @@ export interface ImportedQuiz {
   subject: string;
   topic: QuizTopic;
   duration: number;
+  maxAttempts?: number;
+  specialAttemptLimits?: SpecialAttemptLimit[];
   questions: Partial<Question>[];
 }
 
@@ -31,19 +33,23 @@ export const parseJSON = (content: string): ImportedQuiz => {
 
 export const parseWord = async (arrayBuffer: ArrayBuffer): Promise<ImportedQuiz> => {
   try {
-    const result = await mammoth.convertToHtml({ arrayBuffer });
+    const options = {
+      // @ts-ignore
+      convertImage: mammoth.images.inline((element: any) => {
+        return element.read("base64").then((imageBuffer: any) => {
+          return {
+            src: "data:" + element.contentType + ";base64," + imageBuffer
+          };
+        });
+      })
+    };
+
+    const result = await mammoth.convertToHtml({ arrayBuffer }, options);
     const html = result.value;
     
-    // Simple parsing logic for HTML from Word
-    // We'll strip some tags but keep basic formatting
-    // This is a bit complex because mammoth output is HTML
-    // For now, let's stick to a simpler text-based parsing but allow HTML in the content
-    
-    const tempDiv = document.createElement('div');
-    tempDiv.innerHTML = html;
-    const text = tempDiv.innerText || tempDiv.textContent || '';
-    
-    const lines = text.split('\n').map(l => l.trim()).filter(l => l !== '');
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+    const elements = Array.from(doc.body.children);
     
     let title = 'Bài thi mới (Imported)';
     let subject = 'Toán';
@@ -54,98 +60,143 @@ export const parseWord = async (arrayBuffer: ArrayBuffer): Promise<ImportedQuiz>
     let currentQuestion: Partial<Question> | null = null;
     let parsingQuestions = false;
     let currentType: QuestionType = 'multiple_choice';
+    let currentOptionIndex = -1;
 
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      
-      if (line.toLowerCase().startsWith('title:')) {
-        title = line.substring(6).trim();
-        continue;
-      }
-      if (line.toLowerCase().startsWith('subject:')) {
-        subject = line.substring(8).trim();
-        continue;
-      }
-      if (line.toLowerCase().startsWith('topic:')) {
-        const t = line.substring(6).trim().toLowerCase();
-        if (['regular', 'periodic', 'graduation'].includes(t)) {
-          topic = t as QuizTopic;
+    const questionPattern = /^(\d+\s*[\.\:\/\)]|(Câu|Question|Câu hỏi|Câu số)\s*\d+\s*[\.\:\/\)]|\(\d+\)|\[\d+\])/i;
+    const sectionPattern = /^(Phần|Part|PHẦN)\s*([12I]+|I|II)[\.\:\/\-]?/i;
+    const optionPattern = /^([A-Z]|[a-z])\s*[\.\:\/\)]|^[\(\[]([A-Z]|[a-z])[\)\]]\s*[\.\:\/\)]?|^[\(\[]([A-Z]|[a-z])[\)\]]/i;
+    const answerPattern = /^(Answer|Đáp án|Dap an|Chọn|Đáp án đúng|Dap an dung)\s*[\.\:]\s*(.*)/i;
+    const metadataPattern = /^(title|tiêu đề|tên đề thi|tên bài thi|subject|môn học|môn|topic|chủ đề|loại đề|duration|thời gian|thời lượng|type|loại câu hỏi)[\.\:]\s*(.*)/i;
+    const explanationPattern = /^(Explanation|Giải thích|Giai thich|Lời giải|Lời giải chi tiết)[\.\:]\s*(.*)/i;
+
+    for (const el of elements) {
+      const text = el.textContent?.trim() || '';
+      if (!text && !el.querySelector('img') && el.tagName !== 'TABLE') continue;
+
+      // Check for section headers
+      const sectionMatch = text.match(sectionPattern);
+      if (sectionMatch) {
+        if (currentQuestion) {
+          questions.push(currentQuestion);
+          currentQuestion = null;
+        }
+        parsingQuestions = true;
+        const sectionNum = (sectionMatch[2] || '').toUpperCase();
+        const sectionText = text.toUpperCase();
+        
+        if (sectionNum === '1' || sectionNum === 'I' || sectionText.includes('TRẮC NGHIỆM')) {
+          currentType = 'multiple_choice';
+        } else if (sectionNum === '2' || sectionNum === 'II' || sectionText.includes('ĐÚNG SAI') || sectionText.includes('ĐÚNG/SAI')) {
+          currentType = 'true_false';
         }
         continue;
       }
-      if (line.toLowerCase().startsWith('duration:')) {
-        duration = parseInt(line.substring(9).trim()) || 30;
-        continue;
-      }
-      
-      if (line.toLowerCase().startsWith('type:')) {
-        const t = line.substring(5).trim().toLowerCase();
-        if (t === 'true_false' || t === 'multiple_choice') {
-          currentType = t as QuestionType;
+
+      // Check for metadata
+      const metaMatch = text.match(metadataPattern);
+      if (!parsingQuestions && metaMatch) {
+        const key = metaMatch[1].toLowerCase();
+        const value = metaMatch[2].trim();
+
+        if (key.match(/title|tiêu đề|tên đề thi|tên bài thi/)) title = value;
+        else if (key.match(/subject|môn học|môn/)) subject = value;
+        else if (key.match(/topic|chủ đề|loại đề/)) {
+          if (['regular', 'periodic', 'graduation'].includes(value.toLowerCase())) {
+            topic = value.toLowerCase() as QuizTopic;
+          }
+        }
+        else if (key.match(/duration|thời gian|thời lượng/)) duration = parseInt(value) || 30;
+        else if (key.match(/type|loại câu hỏi/)) {
+          if (value.toLowerCase().match(/true_false|đúng sai/)) currentType = 'true_false';
+          else currentType = 'multiple_choice';
         }
         continue;
       }
 
-      if (line === '---' || line.startsWith('===')) {
+      // Check for separator
+      if (text === '---' || text.startsWith('===')) {
         parsingQuestions = true;
         continue;
       }
 
-      if (parsingQuestions) {
-        // Detect new question (starts with number like "1." or "Câu 1:")
-        const questionMatch = line.match(/^(\d+[\.\:]|Câu \d+[\.\:])/i);
-        if (questionMatch) {
-          if (currentQuestion) questions.push(currentQuestion);
-          currentQuestion = {
-            type: currentType,
-            text: line.replace(questionMatch[0], '').trim(),
-            options: [],
-            correctOptionIndex: currentType === 'multiple_choice' ? 0 : undefined,
-            correctAnswers: currentType === 'true_false' ? [] : undefined,
-            explanation: '',
-            order: questions.length
-          };
-          continue;
-        }
-
-        // Detect options (A., B., C., D. for multiple_choice OR a., b., c., d. for true_false)
-        const optionMatch = line.match(/^([A-D]|[a-d])[\.\)]/i);
-        if (optionMatch && currentQuestion) {
-          const optText = line.replace(optionMatch[0], '').trim();
-          if (!currentQuestion.options) currentQuestion.options = [];
-          currentQuestion.options.push(optText);
-          continue;
-        }
-
-        // Detect answer
-        const answerMatch = line.match(/^(Answer|Đáp án)[\.\:]\s*(.*)/i);
-        if (answerMatch && currentQuestion) {
-          const ansContent = answerMatch[2].trim();
-          
-          if (currentQuestion.type === 'multiple_choice') {
-            const ansChar = ansContent.charAt(0).toUpperCase();
-            currentQuestion.correctOptionIndex = ansChar.charCodeAt(0) - 65; // A=0, B=1, ...
-          } else {
-            // True/False answer format: "Đúng, Sai, Sai, Đúng" or "T, F, F, T"
-            const parts = ansContent.split(/[\,\s]+/).map(p => p.toLowerCase());
-            currentQuestion.correctAnswers = parts.map(p => 
-              p === 'đúng' || p === 't' || p === 'true' || p === 'd'
-            );
+      // Detect question start
+      const questionMatch = text.match(questionPattern);
+      if (questionMatch) {
+        parsingQuestions = true;
+        if (currentQuestion) questions.push(currentQuestion);
+        
+        // Strip the question number from the HTML content
+        let questionHtml = el.outerHTML;
+        const matchedText = questionMatch[0];
+        // Create a temporary div to manipulate HTML
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = el.innerHTML;
+        
+        // Find the text node that contains the match and remove it
+        const walker = document.createTreeWalker(tempDiv, NodeFilter.SHOW_TEXT, null);
+        let node;
+        while (node = walker.nextNode()) {
+          if (node.textContent?.includes(matchedText)) {
+            node.textContent = node.textContent.replace(matchedText, '').trim();
+            break;
           }
-          continue;
         }
         
-        // If it's just text and we have a current question, append to text or the last option
-        if (currentQuestion && !line.match(/^(Answer|Đáp án|Title|Subject|Topic|Duration)/i)) {
-          if (currentQuestion.options && currentQuestion.options.length > 0) {
-            // Continuation of last option
-            const lastIdx = currentQuestion.options.length - 1;
-            const separator = currentQuestion.type === 'multiple_choice' ? ' ' : '<br>';
-            currentQuestion.options[lastIdx] = currentQuestion.options[lastIdx] + separator + line;
-          } else {
-            // Continuation of question text
-            currentQuestion.text = (currentQuestion.text || '') + '<br>' + line;
+        currentQuestion = {
+          type: currentType,
+          text: tempDiv.innerHTML || el.outerHTML,
+          options: [],
+          correctOptionIndex: currentType === 'multiple_choice' ? 0 : undefined,
+          correctAnswers: currentType === 'true_false' ? [] : undefined,
+          explanation: '',
+          order: questions.length
+        };
+        currentOptionIndex = -1;
+        continue;
+      }
+
+      // Detect option start
+      const optionMatch = text.match(optionPattern);
+      if (parsingQuestions && currentQuestion && optionMatch) {
+        if (!currentQuestion.options) currentQuestion.options = [];
+        currentQuestion.options.push(el.outerHTML);
+        currentOptionIndex = currentQuestion.options.length - 1;
+        continue;
+      }
+
+      // Detect answer
+      const answerMatch = text.match(answerPattern);
+      if (parsingQuestions && currentQuestion && answerMatch) {
+        const ansContent = answerMatch[2].trim();
+        
+        if (currentQuestion.type === 'multiple_choice') {
+          const cleanAns = ansContent.replace(/[\(\)\[\]\.\:]/g, '').trim().toUpperCase();
+          const ansChar = cleanAns.charAt(0);
+          if (ansChar >= 'A' && ansChar <= 'Z') {
+            currentQuestion.correctOptionIndex = ansChar.charCodeAt(0) - 65;
           }
+        } else {
+          const parts = ansContent.split(/[\,\s\.\/]+/).map(p => p.toLowerCase());
+          currentQuestion.correctAnswers = parts.map(p => 
+            p === 'đúng' || p === 't' || p === 'true' || p === 'd' || p === '1' || p === 'x'
+          );
+        }
+        continue;
+      }
+
+      // Detect explanation
+      const explanationMatch = text.match(explanationPattern);
+      if (parsingQuestions && currentQuestion && explanationMatch) {
+        currentQuestion.explanation = explanationMatch[2].trim();
+        continue;
+      }
+
+      // Append to current context
+      if (parsingQuestions && currentQuestion) {
+        if (currentOptionIndex >= 0 && currentQuestion.options) {
+          currentQuestion.options[currentOptionIndex] += el.outerHTML;
+        } else {
+          currentQuestion.text += el.outerHTML;
         }
       }
     }
@@ -219,6 +270,7 @@ B. Lựa chọn 2
 C. Lựa chọn 3
 D. Lựa chọn 4
 Answer: B
+Explanation: 1 + 1 = 2, nên chọn B.
 
 Type: true_false
 2. Xét các mệnh đề sau về số nguyên tố:
@@ -227,5 +279,6 @@ b. Số 1 là số nguyên tố
 c. Mọi số nguyên tố đều là số lẻ
 d. Có vô số số nguyên tố
 Answer: Đúng, Sai, Sai, Đúng
+Explanation: Số 1 không phải số nguyên tố. Số 2 là số nguyên tố chẵn duy nhất.
 `;
 };

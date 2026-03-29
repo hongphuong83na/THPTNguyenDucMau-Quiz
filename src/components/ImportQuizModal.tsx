@@ -40,12 +40,14 @@ export default function ImportQuizModal({ onClose, onImport }: ImportQuizModalPr
       } else if (extension === 'docx') {
         const arrayBuffer = await file.arrayBuffer();
         imported = await parseWord(arrayBuffer);
+      } else if (extension === 'doc') {
+        throw new Error('Định dạng .doc không được hỗ trợ. Vui lòng lưu file dưới dạng .docx (Word 2007+) và thử lại.');
       } else {
         throw new Error('Định dạng file không được hỗ trợ. Vui lòng chọn .json hoặc .docx');
       }
 
       if (imported.questions.length === 0) {
-        throw new Error('Không tìm thấy câu hỏi nào trong file.');
+        throw new Error('Không tìm thấy câu hỏi nào trong file. Vui lòng đảm bảo câu hỏi bắt đầu bằng số (ví dụ: "1." hoặc "Câu 1.") và các phương án bắt đầu bằng chữ cái (ví dụ: "A.").');
       }
 
       setSuccess(imported);
@@ -103,7 +105,7 @@ export default function ImportQuizModal({ onClose, onImport }: ImportQuizModalPr
                     )}
                   </div>
                   <div className="min-w-0">
-                    <p className="font-medium text-stone-900 break-words">
+                    <p className="font-medium text-stone-900 break-normal">
                       {file ? file.name : 'Nhấn để chọn file hoặc kéo thả'}
                     </p>
                     <p className="text-xs text-stone-400 mt-1">Hỗ trợ định dạng .json và .docx</p>
@@ -141,8 +143,8 @@ export default function ImportQuizModal({ onClose, onImport }: ImportQuizModalPr
                   <li>Subject: Môn học</li>
                   <li>Topic: regular/periodic/graduation</li>
                   <li>Duration: 45</li>
-                  <li>--- (Dấu ngăn cách)</li>
-                  <li>1. Nội dung câu hỏi?</li>
+                  <li>--- (Dấu ngăn cách - Tùy chọn)</li>
+                  <li>1. (hoặc Câu 1.) Nội dung câu hỏi?</li>
                   <li>A. Lựa chọn 1</li>
                   <li>B. Lựa chọn 2...</li>
                   <li>Answer: A</li>
@@ -165,8 +167,8 @@ export default function ImportQuizModal({ onClose, onImport }: ImportQuizModalPr
               </div>
               <div className="min-w-0">
                 <h3 className="text-xl font-medium text-stone-900">Phân tích thành công!</h3>
-                <p className="text-stone-500 mt-2 break-words">
-                  Tìm thấy <strong>{success.questions.length}</strong> câu hỏi trong bài thi <strong className="break-words">"{success.title}"</strong>.
+                <p className="text-stone-500 mt-2 break-normal">
+                  Tìm thấy <strong>{success.questions.length}</strong> câu hỏi trong bài thi <strong className="break-normal">"{success.title}"</strong>.
                 </p>
               </div>
 

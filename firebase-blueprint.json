@@ -11,7 +11,7 @@
         "displayName": { "type": "string", "description": "Tên hiển thị" },
         "school": { "type": "string", "description": "Trường học" },
         "class": { "type": "string", "description": "Lớp học" },
-        "role": { "type": "string", "enum": ["admin", "teacher", "student"], "description": "Vai trò người dùng" },
+        "role": { "type": "string", "enum": ["admin", "teacher", "student", "student-vip", "guest"], "description": "Vai trò người dùng" },
         "isApproved": { "type": "boolean", "description": "Trạng thái phê duyệt tài khoản" },
         "createdAt": { "type": "string", "format": "date-time", "description": "Ngày tạo tài khoản" }
       },
@@ -33,8 +33,25 @@
         "isActive": { "type": "boolean", "description": "Trạng thái đề thi" },
         "allowedRoles": {
           "type": "array",
-          "items": { "type": "string", "enum": ["student", "guest"] },
+          "items": { "type": "string", "enum": ["student", "student-vip", "guest"] },
           "description": "Các vai trò được phép tham gia thi"
+        },
+        "reviewRoles": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["student", "student-vip", "guest"] },
+          "description": "Các vai trò được phép xem lại bài thi"
+        },
+        "specialAttemptLimits": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": { "type": "string", "enum": ["class", "student"] },
+              "targetId": { "type": "string" },
+              "maxAttempts": { "type": "integer" }
+            }
+          },
+          "description": "Giới hạn lượt thi đặc biệt cho lớp hoặc học sinh cụ thể"
         }
       },
       "required": ["title", "duration", "createdBy"]
@@ -75,27 +92,24 @@
         "completedAt": { "type": "string", "format": "date-time", "description": "Thời gian nộp bài" },
         "answers": {
           "type": "array",
-          "items": { "type": "any" },
-          "description": "Danh sách các đáp án học sinh đã chọn (số cho MCQ, mảng boolean cho T/F)"
+          "items": {
+            "type": "object",
+            "properties": {
+              "questionId": { "type": "string" },
+              "val": { "type": "any" },
+              "isCorrect": { "type": "boolean" }
+            }
+          },
+          "description": "Danh sách các đáp án chi tiết học sinh đã chọn"
         }
       },
       "required": ["quizId", "studentUid", "score", "completedAt"]
-    },
-    "Setting": {
-      "title": "Setting",
-      "description": "Cấu hình hệ thống.",
-      "type": "object",
-      "properties": {
-        "registrationEnabled": { "type": "boolean", "description": "Cho phép đăng ký tài khoản mới" }
-      },
-      "required": ["registrationEnabled"]
     }
   },
   "firestore": {
     "/users/{uid}": { "schema": "User", "description": "Thông tin người dùng" },
     "/quizzes/{quizId}": { "schema": "Quiz", "description": "Danh sách các bài thi" },
     "/quizzes/{quizId}/questions/{questionId}": { "schema": "Question", "description": "Câu hỏi của từng bài thi" },
-    "/results/{resultId}": { "schema": "Result", "description": "Kết quả thi của học sinh" },
-    "/settings/{settingId}": { "schema": "Setting", "description": "Cấu hình hệ thống" }
+    "/results/{resultId}": { "schema": "Result", "description": "Kết quả thi của học sinh" }
   }
 }

@@ -6,6 +6,7 @@ import { User as AppUser } from './types';
 import { LogIn, LogOut, BookOpen, Loader2, AlertCircle, Clock, Mail, Lock, User as UserIcon, ArrowLeft, Settings } from 'lucide-react';
 import ProfileModal from './components/ProfileModal';
 import { cn } from './lib/utils';
+import { Toaster } from 'sonner';
 
 // Pages
 import Home from './pages/Home';
@@ -38,8 +39,19 @@ export default function App() {
   const [className, setClassName] = useState('');
   const [authLoading, setAuthLoading] = useState(false);
   const [isProfileOpen, setIsProfileOpen] = useState(false);
+  const [registrationEnabled, setRegistrationEnabled] = useState(true);
 
   useEffect(() => {
+    // Listen for registration setting
+    const settingsRef = doc(db, 'settings', 'registration');
+    const unsubscribeSettings = onSnapshot(settingsRef, (doc) => {
+      if (doc.exists()) {
+        setRegistrationEnabled(doc.data().enabled ?? true);
+      }
+    }, (error) => {
+      console.error("Error listening to settings:", error);
+    });
+
     let userUnsubscribe: (() => void) | null = null;
 
     const authUnsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
@@ -114,6 +126,7 @@ export default function App() {
 
     return () => {
       authUnsubscribe();
+      unsubscribeSettings();
       if (userUnsubscribe) userUnsubscribe();
     };
   }, []);
@@ -171,6 +184,10 @@ export default function App() {
 
   const handleEmailSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!registrationEnabled) {
+      setLoginError('Chức năng đăng ký hiện đang tạm khóa bởi Quản trị viên.');
+      return;
+    }
     setLoginError(null);
     setAuthLoading(true);
     try {
@@ -238,7 +255,15 @@ export default function App() {
       return (
         <Landing 
           onLogin={() => setAuthMode('login')} 
-          onRegister={() => setAuthMode('register')} 
+          onRegister={() => {
+            if (registrationEnabled) {
+              setAuthMode('register');
+            } else {
+              setLoginError('Chức năng đăng ký hiện đang tạm khóa.');
+              setAuthMode('login');
+            }
+          }} 
+          registrationEnabled={registrationEnabled}
         />
       );
     }
@@ -260,12 +285,12 @@ export default function App() {
               <div className="w-20 h-20 bg-white/10 backdrop-blur-md rounded-full flex items-center justify-center mx-auto mb-6 border border-white/20 overflow-hidden">
                 <img 
                   src="https://lh3.googleusercontent.com/d/1nJFV426bMfXBj-Ce8neJl-GpSlLTJgmV" 
-                  alt="EduQuiz Logo" 
+                  alt="Nguyễn Đức Mậu-QuizPro Logo" 
                   className="w-full h-full object-cover"
                   referrerPolicy="no-referrer"
                 />
               </div>
-              <h1 className="text-4xl font-serif font-medium mb-2 italic tracking-tight">EduQuiz Pro</h1>
+              <h1 className="text-3xl font-serif font-medium mb-2 italic tracking-tight whitespace-nowrap text-center">Nguyễn Đức Mậu-QuizPro</h1>
               <p className="text-stone-400 text-sm">Nền tảng thi trắc nghiệm trực tuyến chuyên nghiệp</p>
             </div>
           </div>
@@ -282,15 +307,17 @@ export default function App() {
                 >
                   Đăng nhập
                 </button>
-                <button
-                  onClick={() => { setAuthMode('register'); setLoginError(null); setLoginSuccess(null); }}
-                  className={cn(
-                    "flex-1 py-2 text-sm font-medium rounded-lg transition-all",
-                    authMode === 'register' ? "bg-white text-stone-900 shadow-sm" : "text-stone-500 hover:text-stone-700"
-                  )}
-                >
-                  Đăng ký
-                </button>
+                {registrationEnabled && (
+                  <button
+                    onClick={() => { setAuthMode('register'); setLoginError(null); setLoginSuccess(null); }}
+                    className={cn(
+                      "flex-1 py-2 text-sm font-medium rounded-lg transition-all",
+                      authMode === 'register' ? "bg-white text-stone-900 shadow-sm" : "text-stone-500 hover:text-stone-700"
+                    )}
+                  >
+                    Đăng ký
+                  </button>
+                )}
               </div>
             )}
 
@@ -580,12 +607,12 @@ export default function App() {
               <div className="w-10 h-10 bg-emerald-600 rounded-full flex items-center justify-center overflow-hidden">
                 <img 
                   src="https://lh3.googleusercontent.com/d/1nJFV426bMfXBj-Ce8neJl-GpSlLTJgmV" 
-                  alt="EduQuiz Logo" 
+                  alt="Nguyễn Đức Mậu-QuizPro Logo" 
                   className="w-full h-full object-cover"
                   referrerPolicy="no-referrer"
                 />
               </div>
-              <span className="text-xl font-serif italic font-medium tracking-tight">EduQuiz Pro</span>
+              <span className="text-lg font-serif italic font-medium tracking-tight whitespace-nowrap">Nguyễn Đức Mậu-QuizPro</span>
             </div>
 
             <div className="flex items-center gap-4">
@@ -647,7 +674,12 @@ export default function App() {
               <div className="flex items-center gap-3">
                 <div className="text-right hidden sm:block">
                   <p className="text-sm font-medium leading-none">{user.displayName}</p>
-                  <p className="text-xs text-stone-500 mt-1 capitalize">{user.role}</p>
+                  <p className="text-xs text-stone-500 mt-1 capitalize">
+                    {user.role === 'student-vip' ? 'Học sinh-VIP' : 
+                     user.role === 'student' ? 'Học sinh' : 
+                     user.role === 'teacher' ? 'Giáo viên' : 
+                     user.role === 'admin' ? 'Quản trị viên' : 'Khách'}
+                  </p>
                 </div>
                 <button
                   onClick={() => setIsProfileOpen(true)}
@@ -696,9 +728,11 @@ export default function App() {
         />
       )}
 
+      <Toaster position="top-right" richColors closeButton />
+
       <footer className="border-t border-stone-200 py-12 bg-white mt-auto">
         <div className="max-w-7xl mx-auto px-4 text-center">
-          <p className="text-stone-400 text-sm">© 2026 EduQuiz Pro. Nền tảng giáo dục trực tuyến.</p>
+          <p className="text-stone-400 text-sm">© 2026 Nguyễn Đức Mậu-QuizPro. Nền tảng giáo dục trực tuyến.</p>
         </div>
       </footer>
     </div>

@@ -1,5 +1,5 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, User as FirebaseUser, createUserWithEmailAndPassword, signInWithEmailAndPassword, sendPasswordResetEmail, sendEmailVerification, updateProfile, updateEmail, updatePassword } from 'firebase/auth';
+import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, User as FirebaseUser, createUserWithEmailAndPassword, signInWithEmailAndPassword, sendPasswordResetEmail, sendEmailVerification, updateProfile, verifyBeforeUpdateEmail, updatePassword, EmailAuthProvider, reauthenticateWithCredential } from 'firebase/auth';
 import { getFirestore, doc, getDoc, setDoc, collection, query, where, onSnapshot, addDoc, getDocs, deleteDoc, serverTimestamp, Timestamp, updateDoc, deleteField } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 import { UserRole } from './types';
@@ -60,6 +60,14 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   throw new Error(JSON.stringify(errInfo));
 }
 
+export const reauthenticateUser = async (currentPassword: string) => {
+  if (!auth.currentUser || !auth.currentUser.email) {
+    throw new Error('Người dùng chưa đăng nhập hoặc không có email.');
+  }
+  const credential = EmailAuthProvider.credential(auth.currentUser.email, currentPassword);
+  await reauthenticateWithCredential(auth.currentUser, credential);
+};
+
 export const signInWithGoogle = async () => {
   try {
     const result = await signInWithPopup(auth, googleProvider);
@@ -103,7 +111,8 @@ export const signInWithGoogle = async () => {
           class: preAssignedData.class || 'Tự do',
           role: preAssignedRole,
           isApproved: isApproved,
-          createdAt: serverTimestamp()
+          createdAt: serverTimestamp(),
+          lastLoginAt: serverTimestamp()
         });
         
         // If there was a pre-assigned doc with a different ID (e.g. random ID), delete it
@@ -118,10 +127,20 @@ export const signInWithGoogle = async () => {
       try {
         await setDoc(doc(db, 'users', user.uid), {
           role: 'admin',
-          isApproved: true
+          isApproved: true,
+          lastLoginAt: serverTimestamp()
         }, { merge: true });
       } catch (error) {
         handleFirestoreError(error, OperationType.UPDATE, `users/${user.uid}`);
+      }
+    } else {
+      // Just update last login
+      try {
+        await updateDoc(doc(db, 'users', user.uid), {
+          lastLoginAt: serverTimestamp()
+        });
+      } catch (error) {
+        console.error('Error updating last login:', error);
       }
     }
     return user;
@@ -133,7 +152,7 @@ export const signInWithGoogle = async () => {
 
 export const logout = () => signOut(auth);
 
-export const signUpWithEmail = async (email: string, pass: string, name: string, username?: string, school?: string, className?: string) => {
+export const signUpWithEmail = async (email: string, pass: string, name: string, username?: string, school?: string, className?: string, role?: UserRole) => {
   try {
     // Check username uniqueness if provided
     if (username) {
@@ -154,15 +173,15 @@ export const signUpWithEmail = async (email: string, pass: string, name: string,
     const q = query(collection(db, 'users'), where('email', '==', user.email));
     const querySnapshot = await getDocs(q);
     
-    let preAssignedRole: UserRole = isAdminEmail ? 'admin' : 'student';
+    let preAssignedRole: UserRole = role || (isAdminEmail ? 'admin' : 'student');
     let preAssignedDocId: string | null = null;
-    let isApproved = isAdminEmail;
+    let isApproved = isAdminEmail || !!role; // If role is provided, it's admin-created
     let preAssignedData: any = {};
 
     if (!querySnapshot.empty) {
       const preDoc = querySnapshot.docs[0];
       preAssignedData = preDoc.data();
-      preAssignedRole = preAssignedData.role as UserRole;
+      preAssignedRole = role || preAssignedData.role as UserRole;
       preAssignedDocId = preDoc.id;
       isApproved = true;
     }
@@ -177,7 +196,8 @@ export const signUpWithEmail = async (email: string, pass: string, name: string,
         class: className || preAssignedData.class || 'Tự do',
         role: preAssignedRole,
         isApproved: isApproved,
-        createdAt: serverTimestamp()
+        createdAt: serverTimestamp(),
+        lastLoginAt: serverTimestamp()
       });
       
       if (preAssignedDocId && preAssignedDocId !== user.uid) {
@@ -235,6 +255,16 @@ export const signInWithUsernameOrEmail = async (loginId: string, pass: string) =
     try {
       // Try normal sign in
       const result = await signInWithEmailAndPassword(auth, email, pass);
+      
+      // Update last login
+      try {
+        await updateDoc(doc(db, 'users', result.user.uid), {
+          lastLoginAt: serverTimestamp()
+        });
+      } catch (e) {
+        console.error('Error updating last login:', e);
+      }
+      
       return result.user;
     } catch (authError: any) {
       console.log('Auth error code:', authError.code);
@@ -311,8 +341,9 @@ export const checkEmailUnique = async (email: string) => {
 
 export const updateUserEmail = async (newEmail: string) => {
   if (auth.currentUser) {
-    await updateEmail(auth.currentUser, newEmail);
-    await setDoc(doc(db, 'users', auth.currentUser.uid), { email: newEmail }, { merge: true });
+    await verifyBeforeUpdateEmail(auth.currentUser, newEmail);
+    // Note: We don't update Firestore here because the email change is pending verification.
+    // The user will need to click the link in their email to complete the change.
   }
 };
 

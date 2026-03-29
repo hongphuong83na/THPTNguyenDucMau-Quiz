@@ -1,6 +1,6 @@
 import { Timestamp } from 'firebase/firestore';
 
-export type UserRole = 'admin' | 'teacher' | 'student' | 'guest';
+export type UserRole = 'admin' | 'teacher' | 'student' | 'student-vip' | 'guest';
 
 export interface User {
   uid: string;
@@ -12,11 +12,17 @@ export interface User {
   role: UserRole;
   isApproved: boolean;
   createdAt: Timestamp;
+  lastLoginAt?: Timestamp;
   emailVerified?: boolean;
-  password?: string;
 }
 
 export type QuizTopic = 'regular' | 'periodic' | 'graduation';
+
+export interface SpecialAttemptLimit {
+  type: 'class' | 'student';
+  targetId: string; // class name or student UID
+  maxAttempts: number;
+}
 
 export interface Quiz {
   id: string;
@@ -26,10 +32,13 @@ export interface Quiz {
   topic: QuizTopic;
   duration: number; // minutes
   maxAttempts?: number; // 0 or undefined means unlimited
+  specialAttemptLimits?: SpecialAttemptLimit[];
   createdBy: string;
   createdAt: Timestamp;
   isActive: boolean;
   allowedRoles?: UserRole[];
+  reviewRoles?: UserRole[];
+  order?: number;
 }
 
 export type QuestionType = 'multiple_choice' | 'true_false';
@@ -43,6 +52,7 @@ export interface Question {
   correctAnswers?: boolean[]; // For true_false: array of 4 booleans [true, false, true, true] for a, b, c, d.
   explanation?: string;
   order: number;
+  hidden?: boolean;
 }
 
 export interface Result {
@@ -59,5 +69,9 @@ export interface Result {
   totalQuestions: number;
   correctAnswers: number;
   completedAt: Timestamp;
-  answers: { val: number | boolean[] }[];
+  answers: { 
+    questionId: string;
+    val: number | boolean[];
+    isCorrect: boolean;
+  }[];
 }
