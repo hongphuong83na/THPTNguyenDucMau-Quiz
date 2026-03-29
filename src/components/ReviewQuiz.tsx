@@ -27,12 +27,26 @@ export default function ReviewQuiz({ result, onClose, user }: ReviewQuizProps) {
         if (quizDoc.exists()) {
           setQuiz({ id: quizDoc.id, ...quizDoc.data() } as Quiz);
           
-          const questionsSnapshot = await getDocs(query(collection(db, 'quizzes', result.quizId, 'questions'), orderBy('order')));
-          const questionList = questionsSnapshot.docs.map(doc => ({
-            id: doc.id,
-            ...doc.data()
-          })) as Question[];
-          setQuestions(questionList);
+          // Use shuffled questions from result if available, otherwise fetch from DB
+          if (result.shuffledQuestions && result.shuffledQuestions.length > 0) {
+            setQuestions(result.shuffledQuestions.filter(q => q !== undefined && q !== null));
+          } else {
+            const questionsSnapshot = await getDocs(collection(db, 'quizzes', result.quizId, 'questions'));
+            let questionList = questionsSnapshot.docs.map(doc => ({
+              id: doc.id,
+              ...doc.data()
+            })) as Question[];
+
+            // Sort in memory
+            questionList.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+
+            // Filter out hidden questions for non-admins/teachers
+            if (!isAdminOrTeacher) {
+              questionList = questionList.filter(q => q && !q.hidden);
+            }
+
+            setQuestions(questionList.filter(q => q !== undefined && q !== null));
+          }
         }
       } catch (error) {
         console.error('Error fetching review data:', error);
@@ -42,7 +56,7 @@ export default function ReviewQuiz({ result, onClose, user }: ReviewQuizProps) {
     };
 
     fetchQuizData();
-  }, [result.quizId]);
+  }, [result.quizId, result.shuffledQuestions]);
 
   const handlePrint = () => {
     window.print();
@@ -66,16 +80,19 @@ export default function ReviewQuiz({ result, onClose, user }: ReviewQuizProps) {
         <div className="bg-white border-b border-stone-200 px-6 py-4 flex items-center justify-between shrink-0 print:hidden">
           <div className="flex items-center gap-4">
             <div className={cn(
-              "w-12 h-12 rounded-xl flex items-center justify-center font-serif italic text-xl font-bold",
+              "w-12 h-12 rounded-xl flex items-center justify-center font-sans text-xl font-bold",
               result.score >= 8 ? "bg-emerald-100 text-emerald-700" : 
               result.score >= 5 ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-700"
             )}>
               {result.score}
             </div>
             <div>
-              <h2 className="text-lg font-bold text-stone-900 leading-tight">{result.quizTitle}</h2>
+              <h2 className="text-base font-bold text-stone-900 leading-tight">{result.quizTitle}</h2>
               <p className="text-xs text-stone-500 font-medium uppercase tracking-wider">
                 Thí sinh: {result.studentName} • {formatDate(result.completedAt)}
+                {result.violationCount !== undefined && result.violationCount > 0 && (
+                  <span className="ml-2 text-red-600 font-bold">• {result.violationCount} lần vi phạm</span>
+                )}
               </p>
             </div>
           </div>
@@ -104,7 +121,7 @@ export default function ReviewQuiz({ result, onClose, user }: ReviewQuizProps) {
           <div className="hidden print:block mb-8 border-b-2 border-stone-900 pb-4">
             <div className="flex justify-between items-start">
               <div>
-                <h1 className="text-2xl font-bold uppercase">{result.quizTitle}</h1>
+                <h1 className="text-xl font-bold uppercase">{result.quizTitle}</h1>
                 <p className="text-sm font-medium">Môn: {result.subject} | Thời gian: {quiz?.duration} phút</p>
                 <p className="text-sm font-medium">Thí sinh: {result.studentName} | Lớp: {result.studentClass || 'N/A'}</p>
                 <p className="text-sm font-medium">Trường: {result.studentSchool || 'N/A'}</p>
@@ -120,6 +137,7 @@ export default function ReviewQuiz({ result, onClose, user }: ReviewQuizProps) {
           {/* Questions List */}
           <div className="space-y-12 max-w-4xl mx-auto">
             {questions.map((q, idx) => {
+              if (!q) return null;
               const userAnswer = result.answers[idx]?.val;
               const isCorrect = q.type === 'multiple_choice' 
                 ? userAnswer === q.correctOptionIndex
@@ -147,7 +165,7 @@ export default function ReviewQuiz({ result, onClose, user }: ReviewQuizProps) {
                         )}
                       </div>
                       <RichText 
-                        className="text-lg font-medium text-stone-900"
+                        className="text-sm text-stone-900 break-normal w-full font-arial"
                         content={q.text}
                       />
 
@@ -178,7 +196,7 @@ export default function ReviewQuiz({ result, onClose, user }: ReviewQuizProps) {
                                 )}>
                                   {String.fromCharCode(65 + oIdx)}
                                 </div>
-                                <RichText className="text-stone-700" content={opt} />
+                                <RichText className="text-stone-700 flex-1 min-w-0 break-normal font-arial" content={opt} />
                                 {(isAdminOrTeacher || showAnswers[q.id]) && (
                                   <>
                                     {isCorrectChoice && <CheckCircle2 className="w-5 h-5 text-emerald-500 ml-auto" />}
@@ -208,9 +226,9 @@ export default function ReviewQuiz({ result, onClose, user }: ReviewQuizProps) {
 
                               return (
                                 <div key={oIdx} className="grid grid-cols-[1fr,80px,80px] gap-4 items-center p-4 bg-white rounded-2xl border border-stone-100">
-                                  <div className="flex items-center gap-3">
-                                    <span className="text-xs font-bold text-stone-400 uppercase">{label}.</span>
-                                    <RichText className="text-stone-700" content={opt} />
+                                  <div className="flex items-center gap-3 min-w-0 flex-1">
+                                    <span className="text-xs font-bold text-stone-400 uppercase shrink-0">{label}.</span>
+                                    <RichText className="text-stone-700 flex-1 min-w-0 break-normal font-arial" content={opt} />
                                   </div>
                                   <div className="flex justify-center">
                                     <div className={cn(
@@ -260,7 +278,7 @@ export default function ReviewQuiz({ result, onClose, user }: ReviewQuizProps) {
                             <AlertCircle className="w-3 h-3" />
                             Giải thích
                           </p>
-                          <RichText className="text-sm text-stone-600" content={q.explanation} />
+                          <RichText className="text-sm text-stone-600 font-arial break-normal" content={q.explanation} />
                         </div>
                       )}
                     </div>

@@ -24,6 +24,15 @@ export interface SpecialAttemptLimit {
   maxAttempts: number;
 }
 
+export interface QuizSecuritySettings {
+  preventTabSwitch: boolean;
+  maxViolations: number; // 0 means unlimited
+  autoSubmitOnMaxViolations: boolean;
+  showWarningOnViolation: boolean;
+  shuffleQuestions?: boolean;
+  shuffleOptions?: boolean;
+}
+
 export interface Quiz {
   id: string;
   title: string;
@@ -39,6 +48,7 @@ export interface Quiz {
   allowedRoles?: UserRole[];
   reviewRoles?: UserRole[];
   order?: number;
+  securitySettings?: QuizSecuritySettings;
 }
 
 export type QuestionType = 'multiple_choice' | 'true_false';
@@ -74,4 +84,6 @@ export interface Result {
     val: number | boolean[];
     isCorrect: boolean;
   }[];
+  shuffledQuestions?: Question[];
+  violationCount?: number;
 }

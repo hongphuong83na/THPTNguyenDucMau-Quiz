@@ -49,13 +49,21 @@ export default function Home({ user, onTakeQuiz }: HomeProps) {
         ...doc.data()
       })) as Quiz[];
       
-      // Sort by order, then by createdAt
+      // Sort by status (for students), then by order, then by createdAt
       const sortedQuizzes = quizList.sort((a, b) => {
-        if (a.order !== undefined && b.order !== undefined) {
-          return a.order - b.order;
+        // If not admin, prioritize isActive (open quizzes first)
+        if (user.role !== 'admin') {
+          if (a.isActive !== b.isActive) {
+            return a.isActive ? -1 : 1;
+          }
         }
-        if (a.order !== undefined) return -1;
-        if (b.order !== undefined) return 1;
+
+        const orderA = a.order ?? Number.MAX_SAFE_INTEGER;
+        const orderB = b.order ?? Number.MAX_SAFE_INTEGER;
+        
+        if (orderA !== orderB) {
+          return orderA - orderB;
+        }
         
         const dateA = (a.createdAt as any)?.toDate?.() || new Date(0);
         const dateB = (b.createdAt as any)?.toDate?.() || new Date(0);
@@ -237,7 +245,7 @@ export default function Home({ user, onTakeQuiz }: HomeProps) {
       <div className="flex flex-col md:flex-row md:items-end justify-between gap-6">
         <div>
           <div className="flex items-center gap-3 mb-2">
-            <h1 className="text-4xl font-serif font-medium text-stone-900 italic">Chào mừng, {user.displayName || user.email.split('@')[0]}</h1>
+            <h2 className="text-2xl font-sans font-bold text-blue-950 mb-2">Chào mừng, <span translate="no">{user.displayName || user.email.split('@')[0]} </span></h2>
             <button 
               onClick={() => setIsProfileOpen(true)}
               className="p-2 text-stone-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-full transition-all"
@@ -313,7 +321,7 @@ export default function Home({ user, onTakeQuiz }: HomeProps) {
         </div>
       ) : filteredQuizzes.length > 0 ? (
         <DragDropContext onDragEnd={handleDragEnd}>
-          <Droppable droppableId="quizzes" direction="horizontal" isDropDisabled={user.role !== 'admin' || searchTerm !== '' || selectedSubject !== 'all' || selectedTopic !== 'all'}>
+          <Droppable droppableId="quizzes" isDropDisabled={user.role !== 'admin' || searchTerm !== '' || selectedSubject !== 'all' || selectedTopic !== 'all'}>
             {(provided) => (
               <div 
                 {...provided.droppableProps} 
@@ -390,7 +398,7 @@ export default function Home({ user, onTakeQuiz }: HomeProps) {
                             </div>
                           </div>
                           
-                          <h3 className="text-xl font-medium text-stone-900 mb-2 group-hover:text-emerald-700 transition-colors break-normal">{quiz.title}</h3>
+                          <h3 className="text-lg font-medium text-stone-900 mb-2 group-hover:text-emerald-700 transition-colors break-normal">{quiz.title}</h3>
                           <p className="text-stone-500 text-sm line-clamp-2 mb-4 flex-grow break-normal">
                             {quiz.description || "Không có mô tả cho bài thi này."}
                           </p>
@@ -444,7 +452,7 @@ export default function Home({ user, onTakeQuiz }: HomeProps) {
           <div className="absolute inset-0 bg-stone-900/40 backdrop-blur-sm" onClick={() => !saving && setIsProfileOpen(false)} />
           <div className="relative bg-white w-full max-w-md rounded-3xl shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200">
             <div className="px-8 py-6 border-b border-stone-100 flex items-center justify-between bg-stone-50/50">
-              <h2 className="text-xl font-serif italic font-medium">Thông tin cá nhân</h2>
+              <h2 className="text-xl font-sans font-bold text-blue-950">Thông tin cá nhân</h2>
               <button onClick={() => setIsProfileOpen(false)} className="p-2 text-stone-400 hover:text-stone-900 rounded-full hover:bg-stone-100 transition-colors">
                 <XCircle className="w-5 h-5" />
               </button>

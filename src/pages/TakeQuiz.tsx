@@ -1,11 +1,12 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import DOMPurify from 'dompurify';
 import { collection, getDocs, addDoc, serverTimestamp, query, where, orderBy } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { Quiz, Question, User, Result } from '../types';
 import { Clock, ChevronRight, ChevronLeft, CheckCircle2, AlertCircle, Loader2, Send, X } from 'lucide-react';
-import { cn, formatDuration } from '../lib/utils';
+import { formatDuration, cn } from '../lib/utils';
 import RichText from '../components/RichText';
+import { toast } from 'sonner';
 
 interface TakeQuizProps {
   quizId: string;
@@ -23,8 +24,102 @@ export default function TakeQuiz({ quizId, user, onComplete, onCancel }: TakeQui
   const [reviewed, setReviewed] = useState<boolean[]>([]);
   const [timeLeft, setTimeLeft] = useState(0);
   const [submitting, setSubmitting] = useState(false);
+  const [showSubmitConfirm, setShowSubmitConfirm] = useState(false);
   const [isStarted, setIsStarted] = useState(false);
   const [attemptError, setAttemptError] = useState<string | null>(null);
+  const [violationCount, setViolationCount] = useState(0);
+  const [showViolationWarning, setShowViolationWarning] = useState(false);
+  const lastViolationTime = useRef<number>(0);
+
+  useEffect(() => {
+    if (!isStarted || submitting || !quiz) return;
+
+    const settings = quiz.securitySettings || {
+      preventTabSwitch: false,
+      maxViolations: 0,
+      autoSubmitOnMaxViolations: false,
+      showWarningOnViolation: true
+    };
+
+    const recordViolation = (reason: string) => {
+      if (!settings.preventTabSwitch) return;
+
+      const now = Date.now();
+      // Prevent double counting if events fire within 500ms
+      if (now - lastViolationTime.current < 500) return;
+      
+      lastViolationTime.current = now;
+      setViolationCount(prev => {
+        const newCount = prev + 1;
+        if (settings.showWarningOnViolation) {
+          setShowViolationWarning(true);
+        }
+        return newCount;
+      });
+    };
+
+    // 1. Prevent Tab Switching / Leaving the window
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        recordViolation('Bạn đã rời khỏi trang làm bài');
+      }
+    };
+
+    const handleBlur = () => {
+      recordViolation('Bạn đã chuyển sang ứng dụng khác hoặc thu nhỏ trình duyệt');
+    };
+
+    // 2. Prevent Copy/Cut/Paste/ContextMenu
+    const preventDefault = (e: Event) => e.preventDefault();
+    
+    // 3. Prevent Keyboard Shortcuts (Ctrl+C, Ctrl+V, Ctrl+P, Ctrl+S, Ctrl+Shift+I, F12, PrintScreen)
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const isCtrl = e.ctrlKey || e.metaKey;
+      
+      // Block Ctrl+C, Ctrl+V, Ctrl+X, Ctrl+P, Ctrl+S, Ctrl+U, Ctrl+Shift+I
+      if (isCtrl && ['c', 'v', 'x', 'p', 's', 'u', 'i'].includes(e.key.toLowerCase())) {
+        e.preventDefault();
+        return false;
+      }
+
+      // Block F12
+      if (e.key === 'F12') {
+        e.preventDefault();
+        return false;
+      }
+
+      // Block PrintScreen (Note: Hard to block completely, but we can try)
+      if (e.key === 'PrintScreen') {
+        e.preventDefault();
+        recordViolation('Hành vi chụp màn hình bị cấm');
+        return false;
+      }
+    };
+
+    window.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('blur', handleBlur);
+    window.addEventListener('copy', preventDefault);
+    window.addEventListener('cut', preventDefault);
+    window.addEventListener('paste', preventDefault);
+    window.addEventListener('contextmenu', preventDefault);
+    window.addEventListener('keydown', handleKeyDown);
+
+    // Add CSS class to body to prevent selection if tab switch prevention is on
+    if (quiz.securitySettings?.preventTabSwitch) {
+      document.body.classList.add('select-none');
+    }
+
+    return () => {
+      window.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('blur', handleBlur);
+      window.removeEventListener('copy', preventDefault);
+      window.removeEventListener('cut', preventDefault);
+      window.removeEventListener('paste', preventDefault);
+      window.removeEventListener('contextmenu', preventDefault);
+      window.removeEventListener('keydown', handleKeyDown);
+      document.body.classList.remove('select-none');
+    };
+  }, [isStarted, submitting, quiz]);
 
   useEffect(() => {
     const fetchQuizData = async () => {
@@ -71,55 +166,107 @@ export default function TakeQuiz({ quizId, user, onComplete, onCancel }: TakeQui
           setQuiz(quizData);
           setTimeLeft(foundQuiz.data().duration * 60);
           
-          const questionsSnapshot = await getDocs(query(collection(db, 'quizzes', quizId, 'questions'), orderBy('order')));
+          const questionsSnapshot = await getDocs(collection(db, 'quizzes', quizId, 'questions'));
           let questionList = questionsSnapshot.docs.map(doc => ({
             id: doc.id,
             ...doc.data()
           })) as Question[];
+
+          // Sort in memory to handle cases where 'order' might be missing
+          questionList.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
 
           // Filter out hidden questions for non-admins
           if (user.role !== 'admin') {
             questionList = questionList.filter(q => !q.hidden);
           }
 
-          // Helper to shuffle array
+          // Seeded random number generator
+          const seededRandom = (seed: string) => {
+            let h = 0;
+            for (let i = 0; i < seed.length; i++) {
+              h = Math.imul(31, h) + seed.charCodeAt(i) | 0;
+            }
+            return () => {
+              h = Math.imul(48271, h) | 0;
+              return (h >>> 0) / 2147483647;
+            };
+          };
+
+          const rng = seededRandom(user.uid + quizId + attemptCount);
+
+          // Helper to shuffle array with seeded RNG
           const shuffleArray = <T,>(array: T[]): T[] => {
-            const newArr = [...array];
+            if (!array || !Array.isArray(array)) return [];
+            // Filter out any undefined/null elements that might have crept in
+            const cleanArr = array.filter(item => item !== undefined && item !== null);
+            const newArr = [...cleanArr];
             for (let i = newArr.length - 1; i > 0; i--) {
-              const j = Math.floor(Math.random() * (i + 1));
+              const j = Math.floor(rng() * (i + 1));
               [newArr[i], newArr[j]] = [newArr[j], newArr[i]];
             }
             return newArr;
           };
 
+          const settings = quizData.securitySettings || {
+            preventTabSwitch: false,
+            maxViolations: 0,
+            autoSubmitOnMaxViolations: false,
+            showWarningOnViolation: true,
+            shuffleQuestions: true,
+            shuffleOptions: true
+          };
+
           // Shuffle options within each question
-          questionList = questionList.map(q => {
-            if (q.type === 'multiple_choice' && q.options) {
-              const optionsWithCorrect = q.options.map((opt, idx) => ({
-                text: opt,
-                isCorrect: idx === q.correctOptionIndex
-              }));
-              const shuffledOptions = shuffleArray(optionsWithCorrect);
-              return {
-                ...q,
-                options: shuffledOptions.map(o => o.text),
-                correctOptionIndex: shuffledOptions.findIndex(o => o.isCorrect)
-              };
-            }
-            // True/False questions and their sub-statements are NOT shuffled as per user request
-            return q;
-          });
+          if (settings.shuffleOptions !== false) {
+            questionList = questionList.map(q => {
+              if (!q) return q;
+              if (q.type === 'multiple_choice' && Array.isArray(q.options)) {
+                const optionsWithCorrect = q.options
+                  .filter(opt => opt !== undefined && opt !== null)
+                  .map((opt, idx) => ({
+                    text: opt,
+                    isCorrect: idx === q.correctOptionIndex
+                  }));
+                const shuffledOptions = shuffleArray(optionsWithCorrect);
+                return {
+                  ...q,
+                  options: shuffledOptions.map(o => o.text),
+                  correctOptionIndex: shuffledOptions.findIndex(o => o.isCorrect)
+                };
+              }
+              if (q.type === 'true_false' && Array.isArray(q.options) && Array.isArray(q.correctAnswers)) {
+                const optionsWithAnswers = q.options
+                  .filter(opt => opt !== undefined && opt !== null)
+                  .map((opt, idx) => ({
+                    text: opt,
+                    answer: q.correctAnswers![idx]
+                  }));
+                const shuffledOptions = shuffleArray(optionsWithAnswers);
+                return {
+                  ...q,
+                  options: shuffledOptions.map(o => o.text),
+                  correctAnswers: shuffledOptions.map(o => o.answer)
+                };
+              }
+              return q;
+            }).filter(q => q !== undefined && q !== null);
+          }
 
           // Shuffle questions within their parts (MC first, then TF)
-          const mcQuestions = shuffleArray(questionList.filter(q => q.type === 'multiple_choice'));
-          const tfQuestions = questionList.filter(q => q.type === 'true_false'); // Keep original order for Part II
-          const shuffledQuestions = [...mcQuestions, ...tfQuestions];
+          let finalQuestions = questionList.filter(q => q !== undefined && q !== null);
+          if (settings.shuffleQuestions !== false) {
+            const mcQuestions = shuffleArray(finalQuestions.filter(q => q && q.type === 'multiple_choice'));
+            const tfQuestions = shuffleArray(finalQuestions.filter(q => q && q.type === 'true_false')); 
+            finalQuestions = [...mcQuestions, ...tfQuestions];
+          }
 
-          setQuestions(shuffledQuestions);
-          setAnswers(new Array(shuffledQuestions.length).fill(-1).map((_, i) => 
-            shuffledQuestions[i].type === 'true_false' ? [null, null, null, null] : -1
-          ));
-          setReviewed(new Array(shuffledQuestions.length).fill(false));
+          setQuestions(finalQuestions);
+          setAnswers(new Array(finalQuestions.length).fill(-1).map((_, i) => {
+            const q = finalQuestions[i];
+            if (!q) return -1;
+            return q.type === 'true_false' ? [null, null, null, null] : -1;
+          }));
+          setReviewed(new Array(finalQuestions.length).fill(false));
         }
       } catch (error) {
         console.error('Error fetching quiz:', error);
@@ -156,9 +303,16 @@ export default function TakeQuiz({ quizId, user, onComplete, onCancel }: TakeQui
     return tempDiv.innerHTML;
   };
 
-  const handleSubmit = useCallback(async () => {
+  const handleSubmit = useCallback(async (isAutoSubmit = false) => {
     if (submitting) return;
+    
+    if (!isAutoSubmit && !showSubmitConfirm) {
+      setShowSubmitConfirm(true);
+      return;
+    }
+
     setSubmitting(true);
+    setShowSubmitConfirm(false);
 
     try {
       let totalScore = 0;
@@ -208,7 +362,7 @@ export default function TakeQuiz({ quizId, user, onComplete, onCancel }: TakeQui
         });
       });
 
-      await addDoc(collection(db, 'results'), {
+      const submissionPromise = addDoc(collection(db, 'results'), {
         quizId,
         quizTitle: quiz?.title || 'Bài thi không tên',
         subject: quiz?.subject || 'Chưa rõ',
@@ -221,22 +375,48 @@ export default function TakeQuiz({ quizId, user, onComplete, onCancel }: TakeQui
         totalQuestions: questions.length,
         correctAnswers: correctCount,
         completedAt: serverTimestamp(),
-        answers: sanitizedAnswers
+        answers: sanitizedAnswers,
+        shuffledQuestions: questions,
+        violationCount: violationCount
       });
 
-      onComplete();
+      toast.promise(submissionPromise, {
+        loading: 'Đang nộp bài thi...',
+        success: () => {
+          onComplete();
+          return 'Nộp bài thành công!';
+        },
+        error: (err) => {
+          console.error('Error submitting quiz:', err);
+          handleFirestoreError(err, OperationType.WRITE, 'results');
+          return 'Có lỗi xảy ra khi nộp bài. Vui lòng thử lại.';
+        }
+      });
+
+      await submissionPromise;
     } catch (error) {
-      console.error('Error submitting quiz:', error);
-      handleFirestoreError(error, OperationType.WRITE, 'results');
-      alert('Có lỗi xảy ra khi nộp bài. Vui lòng thử lại.');
+      // Errors are handled by toast.promise
     } finally {
       setSubmitting(false);
     }
-  }, [submitting, questions, answers, quiz, user, quizId, onComplete]);
+  }, [submitting, questions, answers, quiz, user, quizId, onComplete, violationCount, showSubmitConfirm]);
+
+  useEffect(() => {
+    if (!isStarted || submitting || !quiz) return;
+    
+    const settings = quiz.securitySettings;
+    if (settings?.maxViolations && settings.maxViolations > 0 && violationCount >= settings.maxViolations && settings.autoSubmitOnMaxViolations) {
+      toast.error(`Bạn đã vi phạm ${violationCount} lần (vượt quá giới hạn ${settings.maxViolations}). Bài thi sẽ tự động nộp!`, {
+        duration: 5000,
+        position: 'top-center'
+      });
+      handleSubmit(true);
+    }
+  }, [violationCount, quiz, isStarted, submitting, handleSubmit]);
 
   useEffect(() => {
     if (!isStarted || timeLeft <= 0) {
-      if (isStarted && timeLeft <= 0) handleSubmit();
+      if (isStarted && timeLeft <= 0) handleSubmit(true);
       return;
     }
 
@@ -283,7 +463,7 @@ export default function TakeQuiz({ quizId, user, onComplete, onCancel }: TakeQui
           <div className="w-20 h-20 bg-red-50 rounded-full flex items-center justify-center mx-auto mb-6">
             <AlertCircle className="w-10 h-10 text-red-500" />
           </div>
-          <h2 className="text-2xl font-serif italic font-medium text-stone-900 mb-4">Không thể làm bài thi</h2>
+          <h2 className="text-2xl font-sans font-bold text-blue-950 mb-4">Không thể làm bài thi</h2>
           <p className="text-stone-500 mb-8">{attemptError}</p>
           <button
             onClick={onCancel}
@@ -298,6 +478,26 @@ export default function TakeQuiz({ quizId, user, onComplete, onCancel }: TakeQui
 
   if (!quiz) return <div className="text-center py-20 text-stone-500">Không tìm thấy bài thi.</div>;
 
+  if (questions.length === 0 && loading === false) {
+    return (
+      <div className="max-w-2xl mx-auto py-12 px-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+        <div className="bg-white rounded-3xl border border-stone-200 p-10 text-center shadow-xl shadow-stone-200/50">
+          <div className="w-20 h-20 bg-amber-50 rounded-3xl flex items-center justify-center mx-auto mb-8">
+            <AlertCircle className="w-10 h-10 text-amber-500" />
+          </div>
+          <h2 className="text-2xl font-sans font-bold text-stone-900 mb-4">Bài thi chưa có câu hỏi</h2>
+          <p className="text-stone-500 mb-8 leading-relaxed">Vui lòng quay lại sau hoặc liên hệ quản trị viên để biết thêm chi tiết.</p>
+          <button
+            onClick={onCancel}
+            className="w-full sm:w-auto bg-stone-900 text-white py-4 px-12 rounded-2xl hover:bg-stone-800 transition-all font-medium shadow-lg shadow-stone-200"
+          >
+            Quay lại trang chủ
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (!isStarted) {
     return (
       <div className="max-w-2xl mx-auto py-12 animate-in fade-in slide-in-from-bottom-4 duration-500">
@@ -305,7 +505,7 @@ export default function TakeQuiz({ quizId, user, onComplete, onCancel }: TakeQui
           <div className="w-20 h-20 bg-emerald-50 rounded-3xl flex items-center justify-center mx-auto mb-8">
             <Clock className="w-10 h-10 text-emerald-600" />
           </div>
-          <h1 className="text-3xl font-serif font-medium text-stone-900 mb-4 italic">{quiz.title}</h1>
+          <h1 className="text-xl font-sans font-bold text-blue-950 mb-4">{quiz.title}</h1>
           <p className="text-stone-500 mb-8 leading-relaxed">
             {quiz.description || "Bài thi này kiểm tra kiến thức tổng quát của bạn."}
           </p>
@@ -341,12 +541,33 @@ export default function TakeQuiz({ quizId, user, onComplete, onCancel }: TakeQui
   }
 
   const currentQuestion = questions[currentQuestionIndex];
+  
+  if (!currentQuestion) {
+    return (
+      <div className="max-w-2xl mx-auto py-12 text-center">
+        <div className="bg-white rounded-3xl border border-stone-200 p-10 shadow-sm">
+          <AlertCircle className="w-12 h-12 text-amber-500 mx-auto mb-4" />
+          <h2 className="text-xl font-bold text-stone-900 mb-2">Lỗi hiển thị câu hỏi</h2>
+          <p className="text-stone-500 mb-6">Không thể tải nội dung câu hỏi hiện tại.</p>
+          <button
+            onClick={onCancel}
+            className="px-8 py-3 bg-stone-900 text-white rounded-xl hover:bg-stone-800 transition-all font-medium"
+          >
+            Quay lại
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   const progress = ((currentQuestionIndex + 1) / questions.length) * 100;
   const minutes = Math.floor(timeLeft / 60);
   const seconds = timeLeft % 60;
 
   const answeredCount = answers.filter((a, i) => {
-    if (questions[i].type === 'multiple_choice') {
+    const q = questions[i];
+    if (!q) return false;
+    if (q.type === 'multiple_choice') {
       return a !== -1;
     } else {
       return (a as (boolean | null)[]).some(val => val !== null);
@@ -366,11 +587,11 @@ export default function TakeQuiz({ quizId, user, onComplete, onCancel }: TakeQui
           {/* Quiz Header - Inside the column to match width */}
           <div className="sticky top-[72px] z-40 bg-white/80 backdrop-blur-md border border-stone-200 rounded-2xl p-4 flex items-center justify-between shadow-sm">
             <div className="flex items-center gap-4">
-              <div className="w-10 h-10 bg-stone-900 rounded-xl flex items-center justify-center text-white font-serif italic font-bold">
+              <div className="w-10 h-10 bg-stone-900 rounded-xl flex items-center justify-center text-white font-sans font-bold">
                 {currentQuestionIndex + 1}
               </div>
               <div>
-                <h2 className="text-sm font-medium text-stone-900">{quiz.title}</h2>
+                <h2 className="text-xs font-medium text-stone-900">{quiz.title}</h2>
                 <div className="w-48 h-1.5 bg-stone-100 rounded-full mt-1 overflow-hidden">
                   <div 
                     className="h-full bg-emerald-500 transition-all duration-300" 
@@ -402,7 +623,7 @@ export default function TakeQuiz({ quizId, user, onComplete, onCancel }: TakeQui
                 </button>
               </div>
               <RichText 
-                className="text-lg sm:text-xl font-sans font-medium text-stone-900 mb-4 leading-relaxed break-normal whitespace-normal w-full"
+                className="text-sm sm:text-base font-arial text-stone-900 mb-4 leading-relaxed break-normal w-full"
                 content={stripPrefix(currentQuestion.text)}
               />
               <div className="grid grid-cols-1 gap-2">
@@ -428,7 +649,7 @@ export default function TakeQuiz({ quizId, user, onComplete, onCancel }: TakeQui
                       </div>
                       <RichText 
                         className={cn(
-                          "text-sm sm:text-base font-sans font-light transition-colors flex-1 min-w-0 break-normal whitespace-pre-wrap w-full text-left",
+                          "text-sm sm:text-base font-arial transition-colors flex-1 min-w-0 break-normal w-full text-left",
                           answers[currentQuestionIndex] === index ? "text-emerald-900" : "text-stone-700"
                         )}
                         content={stripPrefix(option)}
@@ -444,7 +665,7 @@ export default function TakeQuiz({ quizId, user, onComplete, onCancel }: TakeQui
                             {label}
                           </div>
                           <RichText 
-                            className="text-stone-700 text-xs sm:text-sm font-sans font-light flex-1 leading-relaxed prose prose-stone max-w-none break-normal whitespace-pre-wrap w-full text-left"
+                            className="text-stone-700 text-sm sm:text-base font-arial flex-1 min-w-0 leading-relaxed max-w-none break-normal w-full text-left"
                             content={stripPrefix(currentQuestion.options[index])}
                           />
                         </div>
@@ -488,12 +709,13 @@ export default function TakeQuiz({ quizId, user, onComplete, onCancel }: TakeQui
 
               {currentQuestionIndex === questions.length - 1 ? (
                 <button
-                  onClick={handleSubmit}
+                  onClick={() => handleSubmit()}
                   disabled={submitting}
+                  translate="no"
                   className="flex items-center gap-2 bg-emerald-600 text-white py-2 px-6 rounded-xl hover:bg-emerald-700 transition-all font-medium shadow-lg shadow-emerald-200 disabled:opacity-50 text-sm"
                 >
                   {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                  Nộp bài
+                  <span translate="no">Nộp bài</span>
                 </button>
               ) : (
                 <button
@@ -520,7 +742,7 @@ export default function TakeQuiz({ quizId, user, onComplete, onCancel }: TakeQui
                 <p className="text-xs font-medium text-stone-500 mb-1">Thời gian còn lại</p>
                 <p className={cn(
                   "text-xl font-bold whitespace-nowrap",
-                  timeLeft < 60 ? "text-red-600" : "text-slate-500"
+                  timeLeft < 300 ? "text-red-600 font-extrabold animate-pulse" : "text-slate-500"
                 )}>
                   {timeString}
                 </p>
@@ -601,11 +823,13 @@ export default function TakeQuiz({ quizId, user, onComplete, onCancel }: TakeQui
             {/* Submit Button Section */}
             <div className="p-6 pt-0 flex flex-col items-center">
               <button
-                onClick={handleSubmit}
+                onClick={() => handleSubmit()}
                 disabled={submitting}
-                className="w-full bg-[#f39c12] hover:bg-[#e67e22] text-white py-2.5 px-6 rounded-full font-bold text-base shadow-lg transition-all active:scale-[0.98] disabled:opacity-50 mb-6 uppercase tracking-wider"
+                translate="no"
+                className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-3 px-6 rounded-xl font-bold text-base shadow-lg shadow-emerald-200 transition-all active:scale-[0.98] disabled:opacity-50 mb-6 uppercase tracking-wider flex items-center justify-center gap-2"
               >
-                {submitting ? <Loader2 className="w-6 h-6 animate-spin mx-auto" /> : "Nộp bài"}
+                {submitting ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-4 h-4" />}
+                <span>Nộp bài</span>
               </button>
 
               {/* Legend */}
@@ -626,6 +850,70 @@ export default function TakeQuiz({ quizId, user, onComplete, onCancel }: TakeQui
             </div>
           </div>
         </div>
+
+        {showViolationWarning && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+            <div className="bg-white rounded-3xl p-8 max-w-md w-full shadow-2xl border border-red-100 animate-in fade-in zoom-in duration-300">
+              <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-6">
+                <AlertCircle className="w-8 h-8 text-red-600" />
+              </div>
+              <h3 className="text-2xl font-bold text-stone-900 text-center mb-2">Cảnh báo vi phạm!</h3>
+              <p className="text-stone-600 text-center mb-6">
+                Bạn vừa rời khỏi màn hình làm bài thi. Hành động này đã được ghi lại. 
+                Vui lòng tập trung làm bài và không chuyển tab hoặc mở ứng dụng khác.
+              </p>
+              <div className="bg-red-50 rounded-2xl p-4 mb-6 border border-red-100">
+                <p className="text-red-700 text-sm font-medium text-center">
+                  Số lần vi phạm: <span className="text-lg font-bold">{violationCount}</span>
+                  {quiz?.securitySettings?.maxViolations ? (
+                    <span className="text-stone-400 font-normal"> / {quiz.securitySettings.maxViolations}</span>
+                  ) : null}
+                </p>
+                {quiz?.securitySettings?.autoSubmitOnMaxViolations && quiz?.securitySettings?.maxViolations ? (
+                  <p className="text-[10px] text-red-500 text-center mt-1 uppercase font-bold tracking-wider">
+                    Bài thi sẽ tự động nộp nếu vi phạm quá {quiz.securitySettings.maxViolations} lần
+                  </p>
+                ) : null}
+              </div>
+              <button
+                onClick={() => setShowViolationWarning(false)}
+                className="w-full bg-stone-900 text-white py-3 rounded-xl font-bold hover:bg-stone-800 transition-all shadow-lg"
+              >
+                Tôi đã hiểu và tiếp tục làm bài
+              </button>
+            </div>
+          </div>
+        )}
+
+        {showSubmitConfirm && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+            <div className="bg-white rounded-3xl p-8 max-w-md w-full shadow-2xl border border-emerald-100 animate-in fade-in zoom-in duration-300">
+              <div className="w-16 h-16 bg-emerald-100 rounded-full flex items-center justify-center mx-auto mb-6">
+                <Send className="w-8 h-8 text-emerald-600" />
+              </div>
+              <h3 className="text-2xl font-bold text-stone-900 text-center mb-2">Xác nhận nộp bài?</h3>
+              <p className="text-stone-600 text-center mb-8 leading-relaxed">
+                Bạn đã hoàn thành <span className="font-bold text-emerald-600">{answeredCount}/{questions.length}</span> câu hỏi. 
+                Bạn có chắc chắn muốn nộp bài thi ngay bây giờ? Sau khi nộp, bạn sẽ không thể thay đổi câu trả lời.
+              </p>
+              
+              <div className="grid grid-cols-2 gap-4">
+                <button
+                  onClick={() => setShowSubmitConfirm(false)}
+                  className="py-3 rounded-xl font-bold text-stone-500 hover:bg-stone-100 transition-all"
+                >
+                  Kiểm tra lại
+                </button>
+                <button
+                  onClick={() => handleSubmit(false)}
+                  className="bg-emerald-600 text-white py-3 rounded-xl font-bold hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-200"
+                >
+                  Xác nhận nộp
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

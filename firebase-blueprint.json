@@ -52,6 +52,16 @@
             }
           },
           "description": "Giới hạn lượt thi đặc biệt cho lớp hoặc học sinh cụ thể"
+        },
+        "securitySettings": {
+          "type": "object",
+          "properties": {
+            "preventTabSwitch": { "type": "boolean", "description": "Ngăn chặn chuyển tab/cửa sổ" },
+            "maxViolations": { "type": "integer", "description": "Số lần vi phạm tối đa" },
+            "autoSubmitOnMaxViolations": { "type": "boolean", "description": "Tự động nộp bài khi vượt quá số lần vi phạm" },
+            "showWarningOnViolation": { "type": "boolean", "description": "Hiển thị cảnh báo khi vi phạm" }
+          },
+          "description": "Cấu hình bảo mật riêng cho từng bài thi"
         }
       },
       "required": ["title", "duration", "createdBy"]
@@ -84,8 +94,13 @@
       "type": "object",
       "properties": {
         "quizId": { "type": "string", "description": "ID của bài thi" },
+        "quizTitle": { "type": "string", "description": "Tiêu đề bài thi" },
+        "subject": { "type": "string", "description": "Môn học" },
+        "topic": { "type": "string", "enum": ["regular", "periodic", "graduation"], "description": "Chủ đề bài thi" },
         "studentUid": { "type": "string", "description": "UID của học sinh" },
         "studentName": { "type": "string", "description": "Tên học sinh" },
+        "studentSchool": { "type": "string", "description": "Trường học" },
+        "studentClass": { "type": "string", "description": "Lớp học" },
         "score": { "type": "number", "description": "Điểm số đạt được" },
         "totalQuestions": { "type": "integer", "description": "Tổng số câu hỏi" },
         "correctAnswers": { "type": "integer", "description": "Số câu trả lời đúng" },
@@ -101,7 +116,9 @@
             }
           },
           "description": "Danh sách các đáp án chi tiết học sinh đã chọn"
-        }
+        },
+        "shuffledQuestions": { "type": "array", "description": "Danh sách câu hỏi đã xáo trộn" },
+        "violationCount": { "type": "integer", "description": "Số lần vi phạm" }
       },
       "required": ["quizId", "studentUid", "score", "completedAt"]
     }

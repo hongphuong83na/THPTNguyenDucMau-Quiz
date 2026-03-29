@@ -8,6 +8,7 @@ import { cn, formatDate } from '../lib/utils';
 import { motion } from 'motion/react';
 import { sendPasswordReset, signUpWithEmail, checkUsernameUnique, checkEmailUnique } from '../firebase';
 import { toast } from 'sonner';
+import ConfirmModal from '../components/ConfirmModal';
 
 interface UserManagementProps {
   currentUser: User;
@@ -52,6 +53,7 @@ export default function UserManagement({ currentUser }: UserManagementProps) {
   const [importing, setImporting] = useState(false);
   const [regEnabled, setRegEnabled] = useState(true);
   const [updatingReg, setUpdatingReg] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState<{ uid: string | 'selected'; isOpen: boolean }>({ uid: '', isOpen: false });
 
   useEffect(() => {
     const settingsRef = doc(db, 'settings', 'registration');
@@ -442,8 +444,10 @@ export default function UserManagement({ currentUser }: UserManagementProps) {
       toast.error('Chỉ quản trị viên mới có quyền xóa tài khoản.');
       return;
     }
-    if (!window.confirm('Bạn có chắc chắn muốn xóa người dùng này?')) return;
-    
+    setConfirmDelete({ uid, isOpen: true });
+  };
+
+  const executeDeleteUser = async (uid: string) => {
     try {
       await deleteDoc(doc(db, 'users', uid));
       setSelectedUsers(prev => {
@@ -456,6 +460,8 @@ export default function UserManagement({ currentUser }: UserManagementProps) {
       console.error('Error deleting user:', error);
       handleFirestoreError(error, OperationType.DELETE, 'users');
       toast.error('Có lỗi xảy ra khi xóa người dùng.');
+    } finally {
+      setConfirmDelete({ uid: '', isOpen: false });
     }
   };
 
@@ -465,9 +471,10 @@ export default function UserManagement({ currentUser }: UserManagementProps) {
       return;
     }
     if (selectedUsers.size === 0) return;
-    
-    if (!window.confirm(`Bạn có chắc chắn muốn xóa ${selectedUsers.size} người dùng đã chọn?`)) return;
-    
+    setConfirmDelete({ uid: 'selected', isOpen: true });
+  };
+
+  const executeDeleteSelected = async () => {
     setSaving(true);
     const total = selectedUsers.size;
     let current = 0;
@@ -495,6 +502,7 @@ export default function UserManagement({ currentUser }: UserManagementProps) {
     } finally {
       setSaving(false);
       setDeleteProgress(null);
+      setConfirmDelete({ uid: '', isOpen: false });
     }
   };
 
@@ -578,7 +586,7 @@ export default function UserManagement({ currentUser }: UserManagementProps) {
     <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
         <div>
-          <h1 className="text-4xl font-serif font-medium text-stone-900 mb-2 italic">Quản lý thành viên</h1>
+          <h1 className="text-2xl font-sans font-bold text-blue-950 mb-2">Quản lý thành viên</h1>
           <p className="text-stone-500">Phân quyền và quản lý người dùng trong hệ thống.</p>
         </div>
         
@@ -909,7 +917,7 @@ export default function UserManagement({ currentUser }: UserManagementProps) {
           <div className="absolute inset-0 bg-stone-900/40 backdrop-blur-sm" onClick={() => !saving && setEditingUser(null)} />
           <div className="relative bg-white w-full max-w-md rounded-3xl shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200">
             <div className="px-8 py-6 border-b border-stone-100 flex items-center justify-between bg-stone-50/50">
-              <h2 className="text-xl font-serif italic font-medium">Chỉnh sửa thông tin</h2>
+              <h2 className="text-xl font-sans font-bold text-blue-950">Chỉnh sửa thông tin</h2>
               <button onClick={() => setEditingUser(null)} className="p-2 text-stone-400 hover:text-stone-900 rounded-full hover:bg-stone-100 transition-colors">
                 <XCircle className="w-5 h-5" />
               </button>
@@ -1040,7 +1048,7 @@ export default function UserManagement({ currentUser }: UserManagementProps) {
           <div className="absolute inset-0 bg-stone-900/40 backdrop-blur-sm" onClick={() => !saving && setIsAdding(false)} />
           <div className="relative bg-white w-full max-w-md rounded-3xl shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200">
             <div className="px-8 py-6 border-b border-stone-100 flex items-center justify-between bg-stone-50/50">
-              <h2 className="text-xl font-serif italic font-medium">Thêm thành viên mới</h2>
+              <h2 className="text-xl font-sans font-bold text-blue-950">Thêm thành viên mới</h2>
               <button onClick={() => setIsAdding(false)} className="p-2 text-stone-400 hover:text-stone-900 rounded-full hover:bg-stone-100 transition-colors">
                 <Trash2 className="w-5 h-5" />
               </button>
@@ -1179,6 +1187,21 @@ export default function UserManagement({ currentUser }: UserManagementProps) {
           </div>
         </div>
       )}
+      <ConfirmModal
+        isOpen={confirmDelete.isOpen}
+        title="Xác nhận xóa?"
+        message={confirmDelete.uid === 'selected' 
+          ? `Bạn có chắc chắn muốn xóa ${selectedUsers.size} người dùng đã chọn? Hành động này không thể hoàn tác.`
+          : "Bạn có chắc chắn muốn xóa người dùng này? Hành động này không thể hoàn tác."
+        }
+        confirmLabel="Xóa ngay"
+        cancelLabel="Hủy bỏ"
+        onConfirm={() => confirmDelete.uid === 'selected' ? executeDeleteSelected() : executeDeleteUser(confirmDelete.uid)}
+        onCancel={() => setConfirmDelete({ uid: '', isOpen: false })}
+        loading={saving}
+        variant="danger"
+      />
+
       {/* Password Reset Modal */}
       {resettingUser && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center p-4">
@@ -1189,7 +1212,7 @@ export default function UserManagement({ currentUser }: UserManagementProps) {
             className="relative bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden"
           >
             <div className="px-8 py-6 border-b border-stone-100 flex items-center justify-between bg-stone-50/50">
-              <h3 className="text-xl font-serif italic font-medium text-stone-900">Khôi phục mật khẩu</h3>
+              <h3 className="text-xl font-sans font-bold text-blue-950">Khôi phục mật khẩu</h3>
               <button onClick={() => setResettingUser(null)} className="p-2 hover:bg-stone-100 rounded-full transition-colors">
                 <X className="w-5 h-5 text-stone-400" />
               </button>

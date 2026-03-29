@@ -6,7 +6,7 @@ import { saveAs } from 'file-saver';
 import { collection, onSnapshot, query, orderBy, addDoc, serverTimestamp, updateDoc, doc, deleteDoc, getDocs, writeBatch, deleteField, where } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { Quiz, Question, User, QuestionType, Result, SpecialAttemptLimit } from '../types';
-import { Plus, Trash2, Edit, ChevronRight, Clock, CheckCircle2, XCircle, AlertCircle, Loader2, Save, X, List, PlusCircle, Upload, Download, FileSpreadsheet, ChevronDown, ChevronUp, BarChart3, UserPlus, Users, GripVertical, Eye, EyeOff } from 'lucide-react';
+import { Plus, Trash2, Edit, ChevronRight, Clock, CheckCircle2, XCircle, AlertCircle, Loader2, Save, X, List, PlusCircle, Upload, Download, FileSpreadsheet, ChevronDown, ChevronUp, BarChart3, UserPlus, Users, GripVertical, Eye, EyeOff, Shield } from 'lucide-react';
 import { formatDuration, formatDate, cn } from '../lib/utils';
 import { DragDropContext, Droppable, Draggable, DropResult } from '@hello-pangea/dnd';
 import ImportQuizModal from '../components/ImportQuizModal';
@@ -14,6 +14,7 @@ import RichText from '../components/RichText';
 import { ImportedQuiz, downloadFile } from '../lib/importUtils';
 import DOMPurify from 'dompurify';
 import { toast } from 'sonner';
+import ConfirmModal from '../components/ConfirmModal';
 
 interface AdminDashboardProps {
   user: User;
@@ -59,12 +60,12 @@ const QuestionEditor = memo(({
             </div>
             <div className="flex-1 min-w-0">
               {!isExpanded ? (
-                <div className="flex items-center gap-2">
+                <div className="flex items-start gap-2">
                   <RichText 
-                    className="text-sm text-stone-600 truncate font-medium max-h-10 overflow-hidden"
+                    className="text-xs text-stone-600 line-clamp-2 font-medium max-h-12 overflow-hidden break-normal flex-1"
                     content={q.text || 'Câu hỏi chưa có nội dung...'}
                   />
-                  {q.hidden && <span className="text-[10px] font-bold uppercase bg-stone-200 text-stone-500 px-1.5 py-0.5 rounded">Đã ẩn</span>}
+                  {q.hidden && <span className="text-[10px] font-bold uppercase bg-stone-200 text-stone-500 px-1.5 py-0.5 rounded mt-1">Đã ẩn</span>}
                 </div>
               ) : (
                 <div className="flex items-center gap-2">
@@ -267,8 +268,9 @@ const QuizStatsModal = ({ quiz, onClose }: { quiz: Quiz; onClose: () => void }) 
         const resultsSnapshot = await getDocs(resultsQ);
         const results = resultsSnapshot.docs.map(doc => doc.data() as Result);
 
-        const questionsSnapshot = await getDocs(query(collection(db, 'quizzes', quiz.id, 'questions'), orderBy('order')));
-        const questions = questionsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Question));
+        const questionsSnapshot = await getDocs(collection(db, 'quizzes', quiz.id, 'questions'));
+        const questions = questionsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Question))
+          .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
 
         const questionStats: Record<string, { wrong: number; total: number }> = {};
         
@@ -288,12 +290,14 @@ const QuizStatsModal = ({ quiz, onClose }: { quiz: Quiz; onClose: () => void }) 
           }
         });
 
-        const sortedStats = questions.map(q => ({
-          questionId: q.id,
-          text: q.text,
-          wrongCount: questionStats[q.id]?.wrong || 0,
-          totalCount: questionStats[q.id]?.total || 0
-        })).sort((a, b) => b.wrongCount - a.wrongCount);
+        const sortedStats = questions
+          .filter(q => q !== undefined && q !== null)
+          .map(q => ({
+            questionId: q.id,
+            text: q.text,
+            wrongCount: questionStats[q.id]?.wrong || 0,
+            totalCount: questionStats[q.id]?.total || 0
+          })).sort((a, b) => b.wrongCount - a.wrongCount);
 
         setStats(sortedStats);
       } catch (error) {
@@ -311,7 +315,7 @@ const QuizStatsModal = ({ quiz, onClose }: { quiz: Quiz; onClose: () => void }) 
       <div className="absolute inset-0 bg-stone-900/40 backdrop-blur-sm" onClick={onClose} />
       <div className="relative bg-white w-full max-w-4xl max-h-[80vh] rounded-3xl shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-200">
         <div className="px-8 py-6 border-b border-stone-100 flex items-center justify-between bg-stone-50/50">
-          <h2 className="text-2xl font-serif italic font-medium">Thống kê câu hỏi hay sai: {quiz.title}</h2>
+          <h2 className="text-xl font-sans font-bold text-blue-950">Thống kê câu hỏi hay sai: {quiz.title}</h2>
           <button onClick={onClose} className="p-2 text-stone-400 hover:text-stone-900 rounded-full hover:bg-stone-100 transition-colors">
             <X className="w-6 h-6" />
           </button>
@@ -327,7 +331,7 @@ const QuizStatsModal = ({ quiz, onClose }: { quiz: Quiz; onClose: () => void }) 
                     {i + 1}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <RichText className="text-sm text-stone-800 mb-2" content={s.text} />
+                    <RichText className="text-sm text-stone-800 mb-2 break-normal w-full font-arial" content={s.text} />
                     <div className="flex items-center gap-4">
                       <div className="flex items-center gap-1 text-xs font-medium text-red-600 bg-red-50 px-2 py-1 rounded">
                         <XCircle className="w-3 h-3" /> Sai: {s.wrongCount}
@@ -364,6 +368,7 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
   const [filterSubject, setFilterSubject] = useState<string>('all');
   const [filterTopic, setFilterTopic] = useState<string>('all');
   const [expandedQuestions, setExpandedQuestions] = useState<Record<number, boolean>>({ 0: true });
+  const [confirmDelete, setConfirmDelete] = useState<{ id: string; isOpen: boolean }>({ id: '', isOpen: false });
   const [statsQuiz, setStatsQuiz] = useState<Quiz | null>(null);
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [availableClasses, setAvailableClasses] = useState<string[]>([]);
@@ -385,11 +390,12 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
       
       // Sort by order, then by createdAt
       const sortedQuizzes = quizList.sort((a, b) => {
-        if (a.order !== undefined && b.order !== undefined) {
-          return a.order - b.order;
+        const orderA = a.order ?? Number.MAX_SAFE_INTEGER;
+        const orderB = b.order ?? Number.MAX_SAFE_INTEGER;
+        
+        if (orderA !== orderB) {
+          return orderA - orderB;
         }
-        if (a.order !== undefined) return -1;
-        if (b.order !== undefined) return 1;
         
         const dateA = (a.createdAt as any)?.toDate?.() || new Date(0);
         const dateB = (b.createdAt as any)?.toDate?.() || new Date(0);
@@ -433,11 +439,15 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
   const handleEditQuiz = async (quiz: Quiz) => {
     setEditingQuiz(quiz);
     setSaving(true);
-    const questionsSnapshot = await getDocs(query(collection(db, 'quizzes', quiz.id, 'questions'), orderBy('order')));
+    const questionsSnapshot = await getDocs(collection(db, 'quizzes', quiz.id, 'questions'));
     const questionList = questionsSnapshot.docs.map(doc => ({
       id: doc.id,
       ...doc.data()
     })) as Question[];
+    
+    // Sort in memory
+    questionList.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+
     setEditingQuestions(questionList);
     setOriginalQuestionIds(questionList.map(q => q.id));
     setExpandedQuestions({ 0: true }); // Expand first question by default
@@ -459,9 +469,6 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
     }));
 
     setEditingQuestions(updatedItems);
-    
-    // Clear expanded states as they might be confusing after reorder
-    setExpandedQuestions({});
   };
 
   const handleCreateNew = () => {
@@ -471,7 +478,15 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
       subject: 'Toán',
       topic: 'regular',
       duration: 30,
-      isActive: true
+      isActive: true,
+      securitySettings: {
+        preventTabSwitch: false,
+        maxViolations: 0,
+        autoSubmitOnMaxViolations: false,
+        showWarningOnViolation: true,
+        shuffleQuestions: true,
+        shuffleOptions: true
+      }
     });
     setEditingQuestions([{
       type: 'multiple_choice',
@@ -517,7 +532,7 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
 
   const handleExportQuiz = async (quiz: Quiz) => {
     try {
-      const questionsSnapshot = await getDocs(query(collection(db, 'quizzes', quiz.id, 'questions'), orderBy('order')));
+      const questionsSnapshot = await getDocs(collection(db, 'quizzes', quiz.id, 'questions'));
       const questions = questionsSnapshot.docs.map(doc => {
         const data = doc.data();
         return {
@@ -529,7 +544,7 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
           explanation: data.explanation,
           order: data.order
         };
-      });
+      }).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
 
       const exportData = {
         title: quiz.title,
@@ -545,7 +560,7 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
       downloadFile(JSON.stringify(exportData, null, 2), `${quiz.title.replace(/\s+/g, '_')}.json`, 'application/json');
     } catch (error) {
       console.error('Error exporting quiz:', error);
-      alert('Có lỗi xảy ra khi xuất bài thi.');
+      toast.error('Có lỗi xảy ra khi xuất bài thi.');
     }
   };
 
@@ -556,7 +571,7 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
       const results = resultsSnapshot.docs.map(doc => doc.data());
 
       if (results.length === 0) {
-        alert('Chưa có kết quả nào cho bài thi này.');
+        toast.error('Chưa có kết quả nào cho bài thi này.');
         return;
       }
 
@@ -580,6 +595,7 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
         'Lớp': usersData[r.studentUid]?.class || '',
         'Điểm số': r.score.toFixed(2),
         'Số câu đúng': `${r.correctAnswers}/${r.totalQuestions}`,
+        'Số lần vi phạm': r.violationCount || 0,
         'Thời gian hoàn thành': r.completedAt?.toDate().toLocaleString('vi-VN') || ''
       }));
 
@@ -589,7 +605,7 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
       XLSX.writeFile(wb, `Ket_qua_${quiz.title.replace(/\s+/g, '_')}.xlsx`);
     } catch (error) {
       console.error('Error exporting results:', error);
-      alert('Có lỗi xảy ra khi xuất kết quả.');
+      toast.error('Có lỗi xảy ra khi xuất kết quả.');
     } finally {
       setSaving(false);
     }
@@ -597,13 +613,13 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
 
   const handleSave = async () => {
     if (!editingQuiz?.title || !editingQuiz?.duration) {
-      alert('Vui lòng nhập tiêu đề và thời gian làm bài.');
+      toast.error('Vui lòng nhập tiêu đề và thời gian làm bài.');
       return;
     }
 
     // Validate questions
     const validQuestions = editingQuestions.filter(q => {
-      if (!q.text) return false;
+      if (!q || !q.text) return false;
       if (q.type === 'multiple_choice') {
         return q.options && q.options.length >= 2 && q.options.every(opt => opt && opt.trim() !== '');
       } else if (q.type === 'true_false') {
@@ -617,7 +633,7 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
     });
     
     if (validQuestions.length === 0) {
-      alert('Vui lòng thêm ít nhất một câu hỏi hoàn chỉnh (có nội dung và đầy đủ các lựa chọn).');
+      toast.error('Vui lòng thêm ít nhất một câu hỏi hoàn chỉnh (có nội dung và đầy đủ các lựa chọn).');
       return;
     }
 
@@ -628,7 +644,7 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
     if (isNewQuiz || titleChanged) {
       const duplicate = quizzes.find(q => q.title.trim().toLowerCase() === editingQuiz.title.trim().toLowerCase() && q.id !== editingQuiz.id);
       if (duplicate) {
-        alert('Tên bài thi đã tồn tại. Vui lòng chọn tên khác.');
+        toast.error('Tên bài thi đã tồn tại. Vui lòng chọn tên khác.');
         return;
       }
     }
@@ -647,6 +663,15 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
         allowedRoles: editingQuiz.allowedRoles || ['student', 'student-vip', 'guest'],
         reviewRoles: editingQuiz.reviewRoles || ['student', 'student-vip', 'guest'],
         specialAttemptLimits: editingQuiz.specialAttemptLimits || [],
+        order: editingQuiz.order ?? 0,
+        securitySettings: {
+          preventTabSwitch: editingQuiz.securitySettings?.preventTabSwitch || false,
+          maxViolations: Number(editingQuiz.securitySettings?.maxViolations || 0),
+          autoSubmitOnMaxViolations: editingQuiz.securitySettings?.autoSubmitOnMaxViolations || false,
+          showWarningOnViolation: editingQuiz.securitySettings?.showWarningOnViolation ?? true,
+          shuffleQuestions: editingQuiz.securitySettings?.shuffleQuestions ?? true,
+          shuffleOptions: editingQuiz.securitySettings?.shuffleOptions ?? true
+        },
         updatedAt: serverTimestamp()
       };
 
@@ -762,7 +787,7 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
       setEditingQuiz(null);
       setEditingQuestions([]);
       setOriginalQuestionIds([]);
-      alert('Lưu bài thi thành công!');
+      toast.success('Lưu bài thi thành công!');
     } catch (error: any) {
       console.error('Error saving quiz:', error);
       let errorMessage = 'Có lỗi xảy ra khi lưu bài thi.';
@@ -776,7 +801,7 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
       } catch (e) {
         errorMessage = `Lỗi: ${error.message || 'Không xác định'}`;
       }
-      alert(errorMessage);
+      toast.error(errorMessage);
     } finally {
       setSaving(false);
     }
@@ -868,9 +893,24 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
     }
   };
 
+  const handleToggleQuizStatus = async (quiz: Quiz) => {
+    try {
+      await updateDoc(doc(db, 'quizzes', quiz.id), {
+        isActive: !quiz.isActive,
+        updatedAt: serverTimestamp()
+      });
+      toast.success(`Đã ${!quiz.isActive ? 'mở' : 'đóng'} bài thi thành công`);
+    } catch (error) {
+      console.error('Error toggling quiz status:', error);
+      toast.error('Không thể thay đổi trạng thái bài thi');
+    }
+  };
+
   const handleDeleteQuiz = async (id: string) => {
-    if (!window.confirm('Bạn có chắc chắn muốn xóa bài thi này? Tất cả dữ liệu liên quan sẽ bị mất.')) return;
-    
+    setConfirmDelete({ id, isOpen: true });
+  };
+
+  const executeDeleteQuiz = async (id: string) => {
     setSaving(true);
     try {
       // Delete questions first
@@ -888,11 +928,13 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
       toast.error('Có lỗi xảy ra khi xóa bài thi.');
     } finally {
       setSaving(false);
+      setConfirmDelete({ id: '', isOpen: false });
     }
   };
 
   const addQuestion = useCallback(() => {
     setEditingQuestions(prev => [...prev, {
+      id: `new-${Date.now()}`,
       type: 'multiple_choice',
       text: '',
       options: ['', '', '', ''],
@@ -942,7 +984,7 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
     <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
         <div>
-          <h1 className="text-4xl font-serif font-medium text-stone-900 mb-2 italic">Quản lý bài thi</h1>
+          <h1 className="text-2xl font-sans font-bold text-blue-950 mb-2">Quản lý bài thi</h1>
           <p className="text-stone-500">Tạo mới và quản lý các bộ đề thi trắc nghiệm.</p>
         </div>
         
@@ -1031,7 +1073,7 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
               {filteredQuizzes.length > 0 ? filteredQuizzes.map((quiz) => (
                 <tr key={quiz.id} className="hover:bg-stone-50/50 transition-colors">
                   <td className="px-6 py-4">
-                    <div className="font-medium text-stone-900">{quiz.title}</div>
+                    <div className="text-sm font-medium text-stone-900">{quiz.title}</div>
                     <div className="text-xs text-stone-400 line-clamp-1">{quiz.description}</div>
                   </td>
                   <td className="px-6 py-4 text-sm text-stone-600">
@@ -1046,12 +1088,29 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
                     {formatDuration(quiz.duration)}
                   </td>
                   <td className="px-6 py-4">
-                    <span className={cn(
-                      "inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium",
-                      quiz.isActive ? "bg-emerald-100 text-emerald-700" : "bg-stone-100 text-stone-600"
-                    )}>
-                      {quiz.isActive ? "Đang mở" : "Đã đóng"}
-                    </span>
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={() => handleToggleQuizStatus(quiz)}
+                        title={quiz.isActive ? "Đóng bài thi" : "Mở bài thi"}
+                        className={cn(
+                          "relative inline-flex h-5 w-10 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2",
+                          quiz.isActive ? "bg-emerald-600" : "bg-stone-300"
+                        )}
+                      >
+                        <span
+                          className={cn(
+                            "inline-block h-3 w-3 transform rounded-full bg-white transition-transform",
+                            quiz.isActive ? "translate-x-6" : "translate-x-1"
+                          )}
+                        />
+                      </button>
+                      <span className={cn(
+                        "text-xs font-medium min-w-[60px]",
+                        quiz.isActive ? "text-emerald-700" : "text-stone-500"
+                      )}>
+                        {quiz.isActive ? "Đang mở" : "Đã đóng"}
+                      </span>
+                    </div>
                   </td>
                   <td className="px-6 py-4 text-sm text-stone-500">
                     {formatDate(quiz.createdAt)}
@@ -1114,12 +1173,23 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
       )}
 
       {/* Modal Editor */}
+      <ConfirmModal
+        isOpen={confirmDelete.isOpen}
+        title="Xác nhận xóa?"
+        message="Bạn có chắc chắn muốn xóa bài thi này? Tất cả dữ liệu liên quan sẽ bị mất và không thể hoàn tác."
+        confirmLabel="Xóa ngay"
+        cancelLabel="Hủy bỏ"
+        onConfirm={() => executeDeleteQuiz(confirmDelete.id)}
+        onCancel={() => setConfirmDelete({ id: '', isOpen: false })}
+        variant="danger"
+      />
+
       {isModalOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6">
           <div className="absolute inset-0 bg-stone-900/40 backdrop-blur-sm" onClick={() => !saving && setIsModalOpen(false)} />
           <div className="relative bg-white w-full max-w-4xl max-h-[90vh] rounded-3xl shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-200">
             <div className="px-8 py-6 border-b border-stone-100 flex items-center justify-between bg-stone-50/50">
-              <h2 className="text-2xl font-serif italic font-medium">
+              <h2 className="text-2xl font-sans font-bold text-blue-950">
                 {editingQuiz?.id ? 'Chỉnh sửa bài thi' : 'Tạo bài thi mới'}
               </h2>
               <button 
@@ -1359,6 +1429,143 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
                     ))}
                   </div>
                 </div>
+
+                {/* Security Settings */}
+                <section className="space-y-6 pt-6 border-t border-stone-100">
+                  <h3 className="text-sm font-semibold text-stone-400 uppercase tracking-widest flex items-center gap-2">
+                    <Shield className="w-4 h-4" /> Cấu hình bảo mật thi
+                  </h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between p-4 bg-stone-50 rounded-2xl border border-stone-200">
+                        <div>
+                          <p className="text-sm font-bold text-stone-900">Giám sát chuyển Tab/Cửa sổ</p>
+                          <p className="text-xs text-stone-500">Ghi lại vi phạm khi học sinh rời khỏi màn hình thi</p>
+                        </div>
+                        <button
+                          onClick={() => {
+                            const currentSettings = editingQuiz?.securitySettings || { preventTabSwitch: false, maxViolations: 0, autoSubmitOnMaxViolations: false, showWarningOnViolation: true };
+                            setEditingQuiz({ ...editingQuiz, securitySettings: { ...currentSettings, preventTabSwitch: !currentSettings.preventTabSwitch } });
+                          }}
+                          className={cn(
+                            "relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none",
+                            editingQuiz?.securitySettings?.preventTabSwitch ? "bg-red-600" : "bg-stone-300"
+                          )}
+                        >
+                          <span className={cn(
+                            "inline-block h-4 w-4 transform rounded-full bg-white transition-transform",
+                            editingQuiz?.securitySettings?.preventTabSwitch ? "translate-x-6" : "translate-x-1"
+                          )} />
+                        </button>
+                      </div>
+
+                      <div className="flex items-center justify-between p-4 bg-stone-50 rounded-2xl border border-stone-200">
+                        <div>
+                          <p className="text-sm font-bold text-stone-900">Hiển thị cảnh báo vi phạm</p>
+                          <p className="text-xs text-stone-500">Hiện thông báo nhắc nhở ngay khi học sinh vi phạm</p>
+                        </div>
+                        <button
+                          onClick={() => {
+                            const currentSettings = editingQuiz?.securitySettings || { preventTabSwitch: false, maxViolations: 0, autoSubmitOnMaxViolations: false, showWarningOnViolation: true };
+                            setEditingQuiz({ ...editingQuiz, securitySettings: { ...currentSettings, showWarningOnViolation: !currentSettings.showWarningOnViolation } });
+                          }}
+                          className={cn(
+                            "relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none",
+                            editingQuiz?.securitySettings?.showWarningOnViolation ?? true ? "bg-emerald-600" : "bg-stone-300"
+                          )}
+                        >
+                          <span className={cn(
+                            "inline-block h-4 w-4 transform rounded-full bg-white transition-transform",
+                            editingQuiz?.securitySettings?.showWarningOnViolation ?? true ? "translate-x-6" : "translate-x-1"
+                          )} />
+                        </button>
+                      </div>
+
+                      <div className="flex items-center justify-between p-4 bg-stone-50 rounded-2xl border border-stone-200">
+                        <div>
+                          <p className="text-sm font-bold text-stone-900">Đảo thứ tự câu hỏi</p>
+                          <p className="text-xs text-stone-500">Xáo trộn vị trí các câu hỏi trong đề thi</p>
+                        </div>
+                        <button
+                          onClick={() => {
+                            const currentSettings = editingQuiz?.securitySettings || { preventTabSwitch: false, maxViolations: 0, autoSubmitOnMaxViolations: false, showWarningOnViolation: true, shuffleQuestions: true, shuffleOptions: true };
+                            setEditingQuiz({ ...editingQuiz, securitySettings: { ...currentSettings, shuffleQuestions: !currentSettings.shuffleQuestions } });
+                          }}
+                          className={cn(
+                            "relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none",
+                            editingQuiz?.securitySettings?.shuffleQuestions ?? true ? "bg-emerald-600" : "bg-stone-300"
+                          )}
+                        >
+                          <span className={cn(
+                            "inline-block h-4 w-4 transform rounded-full bg-white transition-transform",
+                            editingQuiz?.securitySettings?.shuffleQuestions ?? true ? "translate-x-6" : "translate-x-1"
+                          )} />
+                        </button>
+                      </div>
+
+                      <div className="flex items-center justify-between p-4 bg-stone-50 rounded-2xl border border-stone-200">
+                        <div>
+                          <p className="text-sm font-bold text-stone-900">Đảo thứ tự phương án</p>
+                          <p className="text-xs text-stone-500">Xáo trộn vị trí các đáp án trong mỗi câu hỏi</p>
+                        </div>
+                        <button
+                          onClick={() => {
+                            const currentSettings = editingQuiz?.securitySettings || { preventTabSwitch: false, maxViolations: 0, autoSubmitOnMaxViolations: false, showWarningOnViolation: true, shuffleQuestions: true, shuffleOptions: true };
+                            setEditingQuiz({ ...editingQuiz, securitySettings: { ...currentSettings, shuffleOptions: !currentSettings.shuffleOptions } });
+                          }}
+                          className={cn(
+                            "relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none",
+                            editingQuiz?.securitySettings?.shuffleOptions ?? true ? "bg-emerald-600" : "bg-stone-300"
+                          )}
+                        >
+                          <span className={cn(
+                            "inline-block h-4 w-4 transform rounded-full bg-white transition-transform",
+                            editingQuiz?.securitySettings?.shuffleOptions ?? true ? "translate-x-6" : "translate-x-1"
+                          )} />
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="space-y-4">
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-stone-700">Số lần vi phạm tối đa (0 = không giới hạn)</label>
+                        <input
+                          type="number"
+                          value={editingQuiz?.securitySettings?.maxViolations || 0}
+                          onChange={(e) => {
+                            const currentSettings = editingQuiz?.securitySettings || { preventTabSwitch: false, maxViolations: 0, autoSubmitOnMaxViolations: false, showWarningOnViolation: true };
+                            setEditingQuiz({ ...editingQuiz, securitySettings: { ...currentSettings, maxViolations: Number(e.target.value) } });
+                          }}
+                          className="w-full px-4 py-3 bg-stone-50 border border-stone-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
+                          placeholder="VD: 3"
+                        />
+                      </div>
+
+                      <div className="flex items-center justify-between p-4 bg-stone-50 rounded-2xl border border-stone-200">
+                        <div>
+                          <p className="text-sm font-bold text-stone-900">Tự động nộp bài khi hết lượt</p>
+                          <p className="text-xs text-stone-500">Nộp bài ngay khi đạt số lần vi phạm tối đa</p>
+                        </div>
+                        <button
+                          disabled={!editingQuiz?.securitySettings?.maxViolations}
+                          onClick={() => {
+                            const currentSettings = editingQuiz?.securitySettings || { preventTabSwitch: false, maxViolations: 0, autoSubmitOnMaxViolations: false, showWarningOnViolation: true };
+                            setEditingQuiz({ ...editingQuiz, securitySettings: { ...currentSettings, autoSubmitOnMaxViolations: !currentSettings.autoSubmitOnMaxViolations } });
+                          }}
+                          className={cn(
+                            "relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none disabled:opacity-50",
+                            editingQuiz?.securitySettings?.autoSubmitOnMaxViolations ? "bg-red-600" : "bg-stone-300"
+                          )}
+                        >
+                          <span className={cn(
+                            "inline-block h-4 w-4 transform rounded-full bg-white transition-transform",
+                            editingQuiz?.securitySettings?.autoSubmitOnMaxViolations ? "translate-x-6" : "translate-x-1"
+                          )} />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </section>
               </section>
 
               {/* Questions */}
@@ -1381,7 +1588,7 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
                       {(provided) => (
                         <div {...provided.droppableProps} ref={provided.innerRef} className="space-y-4">
                           {editingQuestions.map((q, qIndex) => (
-                            <Draggable key={qIndex} draggableId={`q-${qIndex}`} index={qIndex}>
+                            <Draggable key={q.id || `q-${qIndex}`} draggableId={q.id || `q-${qIndex}`} index={qIndex}>
                               {(provided) => (
                                 <div
                                   ref={provided.innerRef}
